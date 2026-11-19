@@ -30,7 +30,7 @@
             <ul>${p.features.slice(0, 4).map((f) => `<li>${esc(f)}</li>`).join("")}</ul>
           </div>
           <div class="price">
-            <b>от ${money(p.min_price)}</b>
+            <b>${p.month_price ? money(p.month_price) + " / месяц" : "от " + money(p.min_price)}</b>
             ${p.trial_days ? `<span class="muted">${p.trial_days} дн. бесплатно</span>` : ""}
             <a class="btn small" href="${cfg.hub ? `https://t.me/${cfg.hub}?start=b${esc(p.slug)}` : "/app#/catalog"}">Подключить</a>
           </div>

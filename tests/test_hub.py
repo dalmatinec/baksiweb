@@ -31,6 +31,7 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         mw.FLOOD_INTERVAL = 0
         self.app = await build(load_config(Path("/nonexistent")))
         self.app.hub_username = "hub_bot"
+        await self.app.db.run("UPDATE plans SET price = NULL WHERE product = 'link'")
         await self.app.db.run("UPDATE plans SET price = 500 WHERE product = 'express' AND days = 30")
         self.session = FakeSession()
         self.bot = Bot("123:abc", session=self.session, default=DefaultBotProperties(parse_mode="HTML"))

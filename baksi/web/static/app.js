@@ -219,7 +219,7 @@ async function pageCatalog() {
         h("span", { class: "avatar", style: `background:${p.color}` }, p.title[0]),
         h("div", {}, h("b", { style: "font-size:17px" }, p.title, h("span", { class: "muted", style: "font-weight:400" }, "  " + p.tagline)),
           h("p", {}, p.description)),
-        h("div", { style: "text-align:right" }, h("b", {}, "от " + money(p.min_price)),
+        h("div", { style: "text-align:right" }, h("b", {}, p.month_price ? `${money(p.month_price)} / месяц` : "от " + money(p.min_price)),
           p.trial_days ? h("div", { class: "hint" }, `${p.trial_days} дн. бесплатно`) : null))))
       : h("div", { class: "panel empty" }, "Каталог скоро откроется."),
   ]);

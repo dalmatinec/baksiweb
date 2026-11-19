@@ -43,6 +43,7 @@ class Module:
     features: tuple[str, ...]
     settings: tuple[Setting, ...]
     default_plans: tuple[int, ...]
+    default_prices: dict = field(default_factory=dict)   # {дней: центы} - цены при первом появлении модуля
     sort: int = 100
     extra: dict = field(default_factory=dict)
 
@@ -91,6 +92,7 @@ def load_modules(modules_dir: Path, default_mem_mb: int) -> dict[str, Module]:
                 how=tuple(raw.get("how", [])), features=tuple(raw.get("features", [])),
                 settings=tuple(_setting(s) for s in raw.get("settings", [])),
                 default_plans=tuple(int(d) for d in raw.get("default_plans", DEFAULT_PLAN_DAYS)),
+                default_prices={int(k): int(v) for k, v in raw.get("default_prices", {}).items()},
                 sort=int(raw.get("sort", 100)),
             )
         except Exception as exc:  # битый манифест не должен ронять платформу
@@ -107,8 +109,9 @@ class Catalog:
         """Новые модули появляются в базе сами, цены не трогаем (их ставит владелец)."""
         for m in self.modules.values():
             await self.db.run("INSERT OR IGNORE INTO products(slug, sort) VALUES (?, ?)", m.slug, m.sort)
-            await self.db.many("INSERT OR IGNORE INTO plans(product, days, price) VALUES (?, ?, NULL)",
-                               [(m.slug, d) for d in m.default_plans])
+            # цена из манифеста ставится только при первом появлении тарифа; дальше цены меняет владелец
+            await self.db.many("INSERT OR IGNORE INTO plans(product, days, price) VALUES (?, ?, ?)",
+                               [(m.slug, d, m.default_prices.get(d)) for d in m.default_plans])
 
     def get(self, slug: str) -> Module | None:
         return self.modules.get(slug)
@@ -132,6 +135,7 @@ class Catalog:
             item = m.public() | {"enabled": bool(r["enabled"]), "trial_days": r["trial_days"],
                                  "plans": all_plans if include_hidden else on_sale}
             item["min_price"] = min((p["price"] for p in on_sale), default=None)
+            item["month_price"] = next((p["price"] for p in on_sale if p["days"] == 30), None)
             out.append(item)
         return out
 

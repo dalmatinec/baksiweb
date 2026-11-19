@@ -131,8 +131,9 @@ async def catalog(call: CallbackQuery, app: App) -> None:
     lines = ["<b>Каталог ботов</b>\nСвой бот на своём токене. Запуск за пару минут.\n"]
     rows = []
     for p in products:
-        lines.append(f"<b>{esc(p['title'])}</b> · {esc(p['tagline'])}\nот {money(p['min_price'])}")
-        rows.append([b(f"{p['title']} · от {money(p['min_price'])}", f"p:{p['slug']}")])
+        price = f"{money(p['month_price'])} / месяц" if p["month_price"] else f"от {money(p['min_price'])}"
+        lines.append(f"<b>{esc(p['title'])}</b> · {esc(p['tagline'])}\n{price}")
+        rows.append([b(f"{p['title']} · {price}", f"p:{p['slug']}")])
     rows.append([b("⬅️ Назад", "home")])
     await render(call, "\n\n".join(lines), kb(*rows))
 

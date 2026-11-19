@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
+from .zygote import Zygote
 from .catalog import Catalog, Module
 from .config import Config
 from .crypto import Vault
@@ -73,6 +74,15 @@ class Proc:
 
 
 def _rss_mb(pid: int) -> float:
+    """Реальная память процесса (PSS): общие с другими ботами страницы делятся между ними поровну.
+    При запуске через заготовку RSS показывал бы у каждого бота всю общую память библиотек."""
+    try:
+        with open(f"/proc/{pid}/smaps_rollup", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("Pss:"):
+                    return int(line.split()[1]) / 1024
+    except (OSError, ValueError):
+        pass
     try:
         with open(f"/proc/{pid}/status", encoding="ascii") as f:
             for line in f:
@@ -121,6 +131,10 @@ class Supervisor:
         # Хуки, которые подставляет приложение (уведомления, сохранение состояния)
         self.on_event: Hook | None = None      # (instance_id, event: dict)
         self.on_problem: Hook | None = None    # (instance_id, kind: str, details: str)
+        self.zygote = Zygote(cfg.modules_dir, cfg.data_dir / "run" / "zygote.sock", {
+            "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"), "LANG": "C.UTF-8",
+            "PYTHONUNBUFFERED": "1", "PYTHONDONTWRITEBYTECODE": "1", "MALLOC_ARENA_MAX": "2",
+            "PYTHONPATH": str(cfg.modules_dir / "kit"), "HOME": str(cfg.data_dir)}) if cfg.use_zygote else None
 
     # --- публичное ------------------------------------------------------------
     def poke(self) -> None:
@@ -131,6 +145,8 @@ class Supervisor:
         self.cfg.instances_dir.mkdir(parents=True, exist_ok=True)
         self.cfg.logs_dir.mkdir(parents=True, exist_ok=True)
         last_watch = 0.0
+        if self.zygote:  # прогреваем заготовку заранее: первые боты стартуют без ожидания загрузки библиотек
+            asyncio.create_task(self.zygote.ensure())
         while not self.closing:
             try:
                 await self.reconcile()
@@ -150,6 +166,8 @@ class Supervisor:
         self.wake.set()
         await asyncio.gather(*(self._stop(p, "остановка платформы") for p in list(self.procs.values())),
                              return_exceptions=True)
+        if self.zygote:
+            await self.zygote.close()
 
     async def restart(self, instance_id: int) -> None:
         proc = self.procs.get(instance_id)
@@ -338,14 +356,21 @@ class Supervisor:
             proc.log_file = self.cfg.logs_dir / f"{proc.instance_id}.log"
             proc.saw_unauthorized = False
             proc.stopping = False
+            if self.zygote:
+                try:
+                    proc.process = await self.zygote.spawn(proc.module.entry, proc.module.path, env)
+                except Exception:
+                    log.exception("Запуск через заготовку не удался")
+                    proc.process = None
             try:
-                proc.process = await asyncio.create_subprocess_exec(
-                    sys.executable, "-m", "baksi_launch", proc.module.entry,
-                    cwd=str(proc.module.path), env=env,
-                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT, start_new_session=True,
-                    limit=1 << 20,
-                )
+                if not proc.process:
+                    proc.process = await asyncio.create_subprocess_exec(
+                        sys.executable, "-m", "baksi_launch", proc.module.entry,
+                        cwd=str(proc.module.path), env=env,
+                        stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.STDOUT, start_new_session=True,
+                        limit=1 << 20,
+                    )
             except OSError as exc:
                 log.error("Копия %s не запустилась: %s", proc.instance_id, exc)
                 proc.retry_at = time.time() + 30

@@ -271,10 +271,14 @@ class SupervisorTests(Base):
         async def on_problem(iid, kind, details):
             problems.append(kind)
         sup.on_problem = on_problem
-        await self._instance("hog")
+        iid = await self._instance("hog")
         try:
             await sup.reconcile()
-            await asyncio.sleep(2)
+            for _ in range(100):
+                if iid in sup.procs and sup.procs[iid].running:
+                    break
+                await asyncio.sleep(0.1)
+            await asyncio.sleep(1)
             await sup.watchdog()
             await sup.watchdog()
             self.assertEqual(problems, [], "короткий скачок памяти не повод убивать бота")

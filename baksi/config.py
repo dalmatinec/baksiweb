@@ -47,6 +47,7 @@ class Config:
     max_instances: int       # защита от перегрузки сервера
     backup_keep_days: int
     purge_after_days: int    # сколько хранить данные истёкшей копии
+    use_zygote: bool = True  # запуск ботов через заготовку (fork): общая память библиотек, в ~5 раз экономнее
     extra: dict = field(default_factory=dict)
 
     @property
@@ -97,6 +98,7 @@ def load_config(env_file: Path | None = None) -> Config:
         proxy_url=os.environ.get("PROXY_URL", "").strip(),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         instance_mem_mb=_int("INSTANCE_MEM_MB", 320),
+        use_zygote=os.environ.get("USE_ZYGOTE", "1").strip() not in ("0", "false", "no", ""),
         max_instances=_int("MAX_INSTANCES", 300),
         backup_keep_days=_int("BACKUP_KEEP_DAYS", 7),
         purge_after_days=_int("PURGE_AFTER_DAYS", 30),

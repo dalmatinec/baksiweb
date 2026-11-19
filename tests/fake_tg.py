@@ -10,9 +10,9 @@ from aiogram import Bot
 from aiogram.client.session.base import BaseSession
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.methods import (AnswerCallbackQuery, CloseForumTopic, CopyMessage, CreateForumTopic, DeleteMessage,
-                             DeleteWebhook, EditMessageReplyMarkup, EditMessageText, ForwardMessage, GetChatMember,
+                             DeleteWebhook, EditMessageReplyMarkup, GetChat, EditMessageText, ForwardMessage, GetChatMember,
                              GetMe, SendMessage, SetMessageReaction, TelegramMethod)
-from aiogram.types import (CallbackQuery, Chat, ChatMemberAdministrator, ChatMemberMember, ForumTopic, Message,
+from aiogram.types import (CallbackQuery, Chat, ChatFullInfo, ChatMemberAdministrator, ChatMemberMember, ForumTopic, Message,
                            MessageId, Update, User)
 
 BOT = User(id=999, is_bot=True, first_name="TestBot", username="test_bot")
@@ -28,6 +28,7 @@ class Sent:
     source_id: int | None = None
     markup: Any = None
     thread: int | None = None
+    reply_to: int | None = None
 
 
 @dataclass
@@ -37,6 +38,7 @@ class FakeSession(BaseSession):
     admins: set[tuple[int, int]] = field(default_factory=set)
     reactions: list[tuple[int, int]] = field(default_factory=list)
     answers: list[str] = field(default_factory=list)
+    forums: set[int] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         BaseSession.__init__(self)
@@ -76,8 +78,9 @@ class FakeSession(BaseSession):
             return self._msg(chat_id, mid)
         if isinstance(method, CopyMessage):
             mid = next(self._ids)
+            reply = method.reply_parameters.message_id if method.reply_parameters else None
             self.sent.append(Sent("copy", chat_id, mid, from_chat=method.from_chat_id, source_id=method.message_id,
-                                  markup=method.reply_markup, thread=method.message_thread_id))
+                                  markup=method.reply_markup, thread=method.message_thread_id, reply_to=reply))
             return MessageId(message_id=mid)
         if isinstance(method, EditMessageText):
             self.sent.append(Sent("edit", chat_id, method.message_id, method.text, markup=method.reply_markup))
@@ -90,6 +93,8 @@ class FakeSession(BaseSession):
         if isinstance(method, SetMessageReaction):
             self.reactions.append((chat_id, method.message_id))
             return True
+        if isinstance(method, GetChat):
+            return ChatFullInfo.model_construct(id=chat_id, type="supergroup", is_forum=chat_id in self.forums)
         if isinstance(method, GetChatMember):
             if (chat_id, method.user_id) in self.admins:
                 return ChatMemberAdministrator.model_construct(

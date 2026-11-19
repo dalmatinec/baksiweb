@@ -160,13 +160,8 @@ class SvyazTests(ModuleBase):
         self.dp.include_router(baksi_kit.bind_router())
         self.dp.include_router(self.mod.router)
 
-    async def make_dept(self, title: str) -> int:
-        await self.feed(callback_update(OWNER, user(OWNER), "sva:newdept"))
-        await self.feed(message_update(OWNER, user(OWNER), title))
-        return await self.db.value("SELECT id FROM departments WHERE title = ?", title)
-
-    async def add_operator(self, uid: int, name: str, dept_id: int | None = None, username: str | None = None):
-        await self.feed(callback_update(OWNER, user(OWNER), f"sva:dept:{dept_id}" if dept_id else "sva:ops"))
+    async def add_operator(self, uid: int, name: str, username: str | None = None):
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:ops"))
         token = await self.db.value("SELECT token FROM invites ORDER BY rowid DESC LIMIT 1")
         await self.feed(message_update(uid, user(uid, name, username), f"/start op_{token}"))
 
@@ -178,6 +173,8 @@ class SvyazTests(ModuleBase):
         await self.add_operator(41, "Ерлан")
         self.assertTrue(await self.sv.is_operator(SELLER))
         self.assertFalse(await self.sv.is_operator(OWNER), "владелец не оператор сам по себе")
+        await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "/start"))
+        self.assertIsNone(self.session.to(CLIENT)[-1].markup, "отделов больше нет, клиент сразу пишет")
         await self.feed(message_update(CLIENT, user(CLIENT, "Клиент", "client_nick"), "У меня спам-блок", mid=90))
         for op in (SELLER, 41):
             self.assertEqual(self.session.to(op, "copy")[-1].source_id, 90)
@@ -187,19 +184,21 @@ class SvyazTests(ModuleBase):
             self.assertIn(str(CLIENT), card)
         self.assertEqual(self.session.to(OWNER, "copy"), [], "владелец без роли оператора ничего не получает")
         self.assertIn("получено", self.session.to(CLIENT, "send")[-1].text)
-        # второе сообщение того же клиента - без повторной карточки и без повторного «получено»
         cards = self.texts(SELLER).count("Новое обращение")
         received = len(self.session.to(CLIENT, "send"))
         await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Ещё вопрос", mid=91))
         self.assertEqual(self.texts(SELLER).count("Новое обращение"), cards)
         self.assertEqual(len(self.session.to(CLIENT, "send")), received)
         self.assertEqual(self.session.to(41, "copy")[-1].source_id, 91)
+        # оператор, добавленный посреди обращения, получает карточку клиента со следующим сообщением
+        await self.add_operator(42, "Асель")
+        await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Алло", mid=92))
+        self.assertIn("Новое обращение #1", self.texts(42))
 
     async def test_reply_is_anonymous_and_mirrored(self):
         await self.add_operator(SELLER, "Данияр")
         await self.add_operator(41, "Ерлан")
         await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Привет", mid=90))
-        # ответ реплаем на копию сообщения клиента
         copy_mid = self.session.to(SELLER, "copy")[-1].message_id
         await self.feed(message_update(SELLER, user(SELLER, "Данияр"), "Здравствуйте!", mid=91, reply_to=copy_mid))
         self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 91)
@@ -208,33 +207,29 @@ class SvyazTests(ModuleBase):
         self.assertEqual(self.session.to(41, "copy")[-1].source_id, 91, "второй оператор видит сам ответ")
         self.assertNotIn("ответил в", self.texts(SELLER), "себе зеркало не шлём")
         self.assertIn((SELLER, 91), self.session.reactions)
-        # второй оператор тоже может ответить (без блокировки «диалог уже ведёт»)
         await self.feed(callback_update(41, user(41, "Ерлан"), "sv:act:1"))
         self.assertIn("Последним отвечал(а): Данияр", self.texts(41))
         await self.feed(message_update(41, user(41, "Ерлан"), "Дополню", mid=92))
         self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 92)
         self.assertIn("Ерлан</b> ответил", self.texts(SELLER))
-        # история
         await self.feed(callback_update(41, user(41, "Ерлан"), "sv:hist:1"))
-        hist = [s.source_id for s in self.session.to(41, "copy")][-3:]
-        self.assertEqual(hist, [90, 91, 92])
+        self.assertEqual([s.source_id for s in self.session.to(41, "copy")][-3:], [90, 91, 92])
+        self.assertIn("🎧 Данияр", self.texts(41))
         await self.feed(message_update(41, user(41), "/close"))
         self.assertEqual(await self.db.value("SELECT status FROM dialogs WHERE id = 1"), "closed")
         self.assertIn("закрыто", self.texts(SELLER))
 
     async def test_no_operators_reminds_owner_and_keeps_history(self):
         await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Есть кто?", mid=90))
-        self.assertIn("нет операторов", self.texts(OWNER))
+        self.assertIn("обращения никто не видит", self.texts(OWNER))
         self.assertEqual(await self.db.value("SELECT COUNT(*) FROM history"), 1)
-        before = self.texts(OWNER).count("нет операторов")
+        before = self.texts(OWNER).count("никто не видит")
         await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Алло", mid=91))
-        self.assertEqual(self.texts(OWNER).count("нет операторов"), before, "напоминание не чаще раза в 30 минут")
+        self.assertEqual(self.texts(OWNER).count("никто не видит"), before, "напоминание не чаще раза в 30 минут")
         await self.feed(message_update(OWNER, user(OWNER), "/admin"))
-        self.assertIn("Операторов нет", self.texts(OWNER))
-        # первый оператор узнаёт об ожидающих и видит историю
+        self.assertIn("Обращения никто не видит", self.texts(OWNER))
         await self.add_operator(SELLER, "Данияр")
         self.assertIn("ждут ответа: 1", self.texts(SELLER))
-        await self.feed(message_update(SELLER, user(SELLER), "/dialogs"))
         await self.feed(callback_update(SELLER, user(SELLER), "sv:hist:1"))
         self.assertEqual([s.source_id for s in self.session.to(SELLER, "copy")][-2:], [90, 91])
         await self.feed(callback_update(SELLER, user(SELLER), "sv:act:1"))
@@ -251,23 +246,6 @@ class SvyazTests(ModuleBase):
         self.assertFalse(await self.sv.is_operator(SELLER))
         self.assertIn("больше не оператор", self.texts(SELLER))
 
-    async def test_departments_route_to_their_operators(self):
-        sales = await self.make_dept("Продажи")
-        orders = await self.make_dept("Заказы")
-        await self.add_operator(SELLER, "Данияр", sales)
-        await self.add_operator(41, "Ерлан", orders)
-        await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "/start"))
-        self.assertIsNotNone(self.session.to(CLIENT)[-1].markup, "клиент выбирает отдел")
-        await self.feed(callback_update(CLIENT, user(CLIENT), f"sv:dept:{sales}"))
-        await self.feed(message_update(CLIENT, user(CLIENT), "Хочу купить", mid=90))
-        self.assertEqual(self.session.to(SELLER, "copy")[-1].source_id, 90)
-        self.assertEqual(self.session.to(41, "copy"), [], "другой отдел не получает")
-        await self.feed(callback_update(SELLER, user(SELLER), f"sv:trd:1:{orders}"))
-        self.assertIn("Вам передано обращение #1", self.texts(41))
-        await self.feed(callback_update(41, user(41, "Ерлан"), "sv:act:1"))
-        await self.feed(message_update(41, user(41, "Ерлан"), "Оформим", mid=91))
-        self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 91)
-
     async def test_non_operator_cannot_reply(self):
         await self.add_operator(SELLER, "Данияр")
         await self.feed(message_update(CLIENT, user(CLIENT), "Привет", mid=90))
@@ -276,6 +254,18 @@ class SvyazTests(ModuleBase):
         await self.feed(message_update(OWNER, user(OWNER), "Я владелец", mid=91))
         self.assertNotIn(91, [s.source_id for s in self.session.to(CLIENT, "copy")])
 
+    async def test_texts_menu_edit_and_reset(self):
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:texts"))
+        self.assertIn("Тексты", self.session.sent[-1].text)
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:txt:greeting"))
+        await self.feed(message_update(OWNER, user(OWNER), "Привет, пишите!"))
+        self.assertIn("Сохранено", self.texts(OWNER))
+        await self.feed(message_update(CLIENT, user(CLIENT), "/start"))
+        self.assertEqual(self.session.to(CLIENT, "send")[-1].text, "Привет, пишите!")
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:txr:greeting"))
+        await self.feed(message_update(CLIENT, user(CLIENT), "/start"))
+        self.assertIn("Здравствуйте", self.session.to(CLIENT, "send")[-1].text)
+
     async def test_album_makes_one_dialog(self):
         await self.add_operator(SELLER, "Данияр")
         await asyncio.gather(*(self.feed(message_update(CLIENT, user(CLIENT), f"фото {i}", mid=400 + i)) for i in range(4)))
@@ -283,14 +273,53 @@ class SvyazTests(ModuleBase):
         self.assertEqual(self.texts(SELLER).count("Новое обращение"), 1)
         self.assertEqual(len(self.session.to(SELLER, "copy")), 4)
 
-    async def test_topics_mode(self):
-        await self.sv.db.set("mode", "topics")
+    async def test_plain_group_reply_and_mirror(self):
+        await self.add_operator(SELLER, "Данияр")
+        await self.bind()
+        await self.feed(message_update(CLIENT, user(CLIENT, "Клиент", "client_nick"), "Помогите", mid=95))
+        self.assertIn("@client_nick", self.texts(GROUP))
+        card = [s for s in self.session.to(GROUP, "send") if "Новое обращение" in (s.text or "")][0]
+        copy = [s for s in self.session.to(GROUP, "copy") if s.source_id == 95][0]
+        self.assertEqual(copy.reply_to, card.message_id, "сообщение клиента привязано к его карточке")
+        self.assertEqual(self.session.to(SELLER, "copy")[-1].source_id, 95, "операторы в личке тоже получают")
+        # участник группы (не оператор) отвечает реплаем
+        await self.feed(message_update(GROUP, user(77, "Участник"), "Слушаю", mid=600, reply_to=copy.message_id))
+        self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 600)
+        self.assertIn("Участник</b> ответил", self.texts(SELLER))
+        # сообщение в группе без реплая клиенту не уходит
+        await self.feed(message_update(GROUP, user(77, "Участник"), "болтаем", mid=601))
+        self.assertNotIn(601, [s.source_id for s in self.session.to(CLIENT, "copy")])
+        # ответ оператора из лички виден в группе
+        await self.feed(message_update(SELLER, user(SELLER, "Данияр"), "Дополню", mid=96,
+                                       reply_to=self.session.to(SELLER, "copy")[0].message_id))
+        self.assertIn("Данияр</b> ответил", self.texts(GROUP))
+        self.assertEqual(self.session.to(GROUP, "copy")[-1].source_id, 96)
+        await self.feed(callback_update(GROUP, user(77), "sv:close:1"))
+        self.assertEqual(await self.db.value("SELECT status FROM dialogs WHERE id = 1"), "closed")
+
+    async def test_group_only_without_operators(self):
+        await self.bind()
+        await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Есть кто?", mid=95))
+        self.assertNotIn("никто не видит", self.texts(OWNER), "группа подключена - напоминать не нужно")
+        self.assertTrue(any(s.source_id == 95 for s in self.session.to(GROUP, "copy")))
+
+    async def test_topics_group(self):
+        self.session.forums.add(GROUP)
         await self.bind()
         await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Помогите", mid=95))
         topic_copy = [s for s in self.session.to(GROUP, "copy") if s.source_id == 95][0]
         self.assertIsNotNone(topic_copy.thread)
         await self.feed(message_update(GROUP, user(SELLER, "Данияр"), "Слушаю", mid=600, thread=topic_copy.thread))
         self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 600)
+
+    async def test_group_screen_and_unbind(self):
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:group"))
+        self.assertIn("/bind 123456", self.session.sent[-1].text)
+        await self.bind()
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:group"))
+        self.assertIn("подключена", self.session.sent[-1].text)
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:unbind"))
+        self.assertIsNone(baksi_kit.bound_chat_id())
 
     async def test_blocked_client_reported(self):
         await self.add_operator(SELLER, "Данияр")
@@ -307,7 +336,7 @@ class SvyazTests(ModuleBase):
         await self.feed(message_update(CLIENT, user(CLIENT), "Привет", mid=90))
         self.assertEqual(self.session.to(41, "copy")[-1].source_id, 90)
 
-    async def test_migration_moves_old_staff_to_operators(self):
+    async def test_migration_keeps_old_staff_as_operators(self):
         await self.db.close()
         path = Path(self.tmp.name) / "old.db"
         old = ModuleDB(path, self.mod.MIGRATIONS[:1])

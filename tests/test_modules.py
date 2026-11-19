@@ -1,4 +1,5 @@
 """Тесты новых модулей (Экспресс, Связь) на фейковом Bot API: весь путь сообщений туда и обратно."""
+import asyncio
 import importlib.util
 import json
 import os
@@ -98,6 +99,14 @@ class ExpressTests(ModuleBase):
         await self.feed(message_update(GROUP, user(SELLER, "Данияр"), "Ещё", mid=502, reply_to=fwd.message_id))
         self.assertEqual(len(self.session.to(CLIENT, "forward")), 1, "в закрытую заявку не отвечаем")
 
+    async def test_album_makes_one_ticket(self):
+        """Альбом приходит пачкой одновременно: заявка и карточка должны быть одни."""
+        await self.bind()
+        await asyncio.gather(*(self.feed(message_update(CLIENT, user(CLIENT), f"фото {i}", mid=300 + i)) for i in range(5)))
+        self.assertEqual(await self.db.value("SELECT COUNT(*) FROM tickets"), 1)
+        self.assertEqual(len([s for s in self.session.to(GROUP, "send") if "Заявка #" in (s.text or "")]), 1)
+        self.assertEqual(len(self.session.to(GROUP, "forward")), 5)
+
     async def test_owner_design_applies(self):
         """Оформление от владельца платформы: текст карточки и кнопки меняются, своя правка клиента важнее."""
         plat = Path(os.environ["BAKSI_PLATFORM_FILE"])
@@ -190,6 +199,11 @@ class SvyazTests(ModuleBase):
         self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 93)
         await self.feed(message_update(41, user(41), "/close"))
         self.assertEqual(await self.db.value("SELECT status FROM dialogs WHERE id = 1"), "closed")
+
+    async def test_album_makes_one_dialog(self):
+        await self.make_dept("Продажи")
+        await asyncio.gather(*(self.feed(message_update(CLIENT, user(CLIENT), f"фото {i}", mid=400 + i)) for i in range(4)))
+        self.assertEqual(await self.db.value("SELECT COUNT(*) FROM dialogs"), 1)
 
     async def test_topics_mode(self):
         await self.make_dept("Поддержка")

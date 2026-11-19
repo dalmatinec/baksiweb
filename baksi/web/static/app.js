@@ -456,6 +456,8 @@ async function pageBot(id) {
 
   const alerts = [];
   if (!b.has_token) alerts.push(h("div", { class: "panel", style: "display:grid;gap:12px;border:2px solid var(--accent)" }, h("h2", { style: "margin:0" }, "Подключите своего бота"), tokenForm()));
+  if (b.bot_changed) alerts.push(h("div", { class: "alert warn" }, h("b", {}, `Подключён новый бот вместо @${b.bot_changed.old || "старого"}`),
+    h("span", { style: "white-space:pre-line" }, b.bot_changed.hint || "Добавьте нового бота во все группы и каналы, где работал старый.")));
   if (b.status === "token_invalid") alerts.push(h("div", { class: "alert bad" }, h("b", {}, "Telegram отклонил токен"), "Бота удалили или сбросили токен в @BotFather. Данные и настройки сохранены: вставьте новый токен.", tokenForm()));
   if (b.status === "expired") alerts.push(h("div", { class: "alert bad" }, h("b", {}, "Подписка закончилась"), `Бот остановлен, данные хранятся ещё некоторое время.`, h("a", { class: "btn primary", href: `#/renew/${b.product}/${b.id}` }, "Продлить")));
   if (b.status === "crashed") alerts.push(h("div", { class: "alert bad" }, h("b", {}, "Бот несколько раз упал при запуске"), b.status_note || "Мы уже получили уведомление. Попробуйте перезапустить или посмотрите события ниже."));

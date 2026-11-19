@@ -202,6 +202,55 @@ class SupervisorTests(Base):
             await sup.shutdown()
             task.cancel()
 
+    async def test_no_double_start(self):
+        """Две сверки подряд до запуска процесса не должны запустить копию дважды (два процесса на один токен)."""
+        sup = Supervisor(self.cfg, self.db, self.catalog, self.vault)
+        iid = await self._instance("good")
+        self.cfg.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.cfg.instances_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            await asyncio.gather(sup.reconcile(), sup.reconcile(), sup.reconcile())
+            await self._wait(lambda: asyncio.sleep(0, sup.procs[iid].running))
+            await asyncio.sleep(0.5)
+            log = (self.cfg.logs_dir / f"{iid}.log").read_text()
+            self.assertEqual(log.count("=== запуск"), 1)
+        finally:
+            await sup.shutdown()
+
+    async def test_bot_change_resets_group_and_notifies(self):
+        import baksi.instances as inst_mod
+        from baksi.tg import BotInfo
+        sent = []
+
+        class N:
+            def send(self, chat_id, text, markup=None):
+                sent.append((chat_id, text))
+        sup = Supervisor(self.cfg, self.db, self.catalog, self.vault)
+        instances = inst_mod.Instances(self.cfg, self.db, self.catalog, self.vault, sup, N())
+        iid = await self._instance("good")
+        await self.db.run("UPDATE instances SET bot_id = 1, bot_username = 'old_bot', state = ? WHERE id = ?",
+                          json.dumps({"chat_id": -100, "title": "Группа"}), iid)
+        kit_state = self.cfg.instances_dir / str(iid) / "kit_state.json"
+        kit_state.parent.mkdir(parents=True, exist_ok=True)
+        kit_state.write_text(json.dumps({"chat_id": -100, "title": "Группа"}))
+        orig = inst_mod.check_token
+
+        async def fake_check(token, proxy=""):
+            return BotInfo(id=2, username="new_bot", name="New")
+        inst_mod.check_token = fake_check
+        try:
+            await instances.set_token(10, iid, "123456:" + "B" * 35)
+        finally:
+            inst_mod.check_token = orig
+            await sup.shutdown()
+        state = json.loads(await self.db.value("SELECT state FROM instances WHERE id = ?", iid))
+        self.assertNotIn("chat_id", state)
+        self.assertEqual(state["old_bot"], "old_bot")
+        self.assertNotIn("chat_id", json.loads(kit_state.read_text()))
+        self.assertIn("новый бот @new_bot", sent[-1][1])
+        view = instances.view(await self.db.one("SELECT * FROM instances WHERE id = ?", iid))
+        self.assertEqual(view["bot_changed"]["old"], "old_bot")
+
     async def test_crash_backoff(self):
         sup = Supervisor(self.cfg, self.db, self.catalog, self.vault)
         iid = await self._instance("crash")

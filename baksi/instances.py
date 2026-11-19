@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 from typing import Any
 
@@ -90,6 +91,9 @@ class Instances:
             "bind_code": row["bind_code"],
             "bind_hint": module.bind_hint if module else "",
             "group": {"id": state.get("chat_id"), "title": state.get("title")} if state.get("chat_id") else None,
+            "bot_changed": {"at": state["bot_changed_at"], "old": state.get("old_bot"),
+                            "hint": module.bot_change_hint if module else ""}
+            if state.get("bot_changed_at") and now() - state["bot_changed_at"] < 7 * 86400 else None,
             "settings": settings,
             "settings_schema": module.public()["settings"] if module else [],
             "runtime": self.sup.runtime(row["id"]),
@@ -114,16 +118,51 @@ class Instances:
                                   info.id, instance_id)
         if other:
             raise InstanceError(f"Бот @{info.username} уже подключён к другой копии. Создайте отдельного бота")
-        await self.db.run("UPDATE instances SET token_enc = ?, bot_id = ?, bot_username = ?, bot_name = ?, "
-                          "token_bad = 0 WHERE id = ?", self.vault.encrypt(token.strip()), info.id,
-                          info.username, info.name, instance_id)
+        changed = bool(row["bot_id"]) and row["bot_id"] != info.id
+        try:
+            await self.db.run("UPDATE instances SET token_enc = ?, bot_id = ?, bot_username = ?, bot_name = ?, "
+                              "token_bad = 0 WHERE id = ?", self.vault.encrypt(token.strip()), info.id,
+                              info.username, info.name, instance_id)
+        except sqlite3.IntegrityError:  # тот же бот одновременно подключили к другой копии
+            raise InstanceError(f"Бот @{info.username} уже подключён к другой копии. Создайте отдельного бота")
         await self.db.audit(user_id, "set_token", f"instance:{instance_id}", f"@{info.username}")
         log.info("Копия %s: токен @%s", instance_id, info.username)
-        if row["bot_id"] and row["bot_id"] != info.id:
-            # другой бот: старые данные (пользователи, сообщения) относятся к старому боту, но настройки нужны
-            log.info("Копия %s сменила бота %s -> %s", instance_id, row["bot_id"], info.id)
+        if changed:
+            await self._bot_changed(row, info)
         await self.sup.restart(instance_id)
         return info
+
+    async def _bot_changed(self, row: Any, info: BotInfo) -> None:
+        """Подключили ДРУГОГО бота (старого удалили). Новый бот не состоит в группах и каналах старого,
+        а пользователи ещё не нажимали у него /start. Данные, тексты и картинки (они хранятся на диске) остаются."""
+        instance_id = row["id"]
+        log.info("Копия %s сменила бота %s -> %s", instance_id, row["bot_id"], info.id)
+        module = self.catalog.get(row["product"])
+        state = json.loads(row["state"] or "{}")
+        old_group = state.pop("title", None) if state.get("chat_id") else None
+        state.pop("chat_id", None)
+        state["bot_changed_at"] = now()
+        state["old_bot"] = row["bot_username"]
+        await self.db.run("UPDATE instances SET state = ? WHERE id = ?", json.dumps(state, ensure_ascii=False),
+                          instance_id)
+        kit_state = self.cfg.instances_dir / str(instance_id) / "kit_state.json"
+        if kit_state.exists():  # привязка группы была у старого бота
+            try:
+                ks = json.loads(kit_state.read_text(encoding="utf-8"))
+                ks.pop("chat_id", None)
+                ks.pop("title", None)
+                kit_state.write_text(json.dumps(ks, ensure_ascii=False), encoding="utf-8")
+            except (OSError, ValueError):
+                kit_state.unlink(missing_ok=True)
+        self.sup.status_cache.pop(instance_id, None)
+        hint = module.bot_change_hint if module else ""
+        text = (f"🔄 {module.title if module else 'Бот'}: подключён новый бот @{info.username} вместо "
+                f"@{row['bot_username'] or '—'}. Все данные и настройки на месте.\n\n"
+                "Что нужно сделать, потому что это другой бот:\n" + hint)
+        if old_group and module and module.needs_bind:
+            text += f"\n\nПрежняя группа: «{old_group}». Привязка сброшена: добавьте нового бота и отправьте " \
+                    f"<code>/bind {row['bind_code']}</code>."
+        self.notifier.send(row["user_id"], text)
 
     # --- управление -----------------------------------------------------------
     async def set_flag(self, user_id: int | None, instance_id: int, flag: str, value: bool) -> None:

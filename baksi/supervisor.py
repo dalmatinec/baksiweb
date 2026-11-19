@@ -57,6 +57,7 @@ class Proc:
     retry_at: float = 0.0
     crashed_until: float = 0.0
     stopping: bool = False
+    starting: bool = False      # запуск уже запланирован: второй раз не запускаем (иначе два процесса на один токен)
     saw_unauthorized: bool = False
     rss_mb: float = 0.0
     last_exit: int | None = None
@@ -226,6 +227,9 @@ class Supervisor:
                 if self.on_problem:
                     await self.on_problem(iid, "capacity", "Достигнут лимит MAX_INSTANCES")
                 continue
+            if proc.starting:
+                continue
+            proc.starting = True
             asyncio.create_task(self._start(proc, inst))
         for iid in list(self.procs):
             if iid not in seen and not self.procs[iid].running:
@@ -265,6 +269,12 @@ class Supervisor:
         return n
 
     async def _start(self, proc: Proc, inst: Any) -> None:
+        try:
+            await self._start_locked(proc, inst)
+        finally:
+            proc.starting = False
+
+    async def _start_locked(self, proc: Proc, inst: Any) -> None:
         async with self.start_sem:
             if proc.running or self.closing:
                 return

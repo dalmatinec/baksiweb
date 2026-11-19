@@ -350,6 +350,9 @@ async def bot_card(target: Message | CallbackQuery, app: App, instance_id: int, 
     elif v["status"] == "token_invalid":
         lines += ["", "Telegram отклонил токен. Данные сохранены: просто вставьте новый токен."]
         rows.append([b("🔑 Вставить новый токен", f"tok:{instance_id}", style="danger")])
+    if v["bot_changed"]:
+        lines += ["", f"🔄 <b>Подключён новый бот вместо @{esc(v['bot_changed']['old'] or '—')}.</b> Что сделать:",
+                  esc(v["bot_changed"]["hint"])]
     if v["needs_bind"] and v["has_token"]:
         if v["group"]:
             lines.append(f"👥 Группа: {esc(v['group']['title'])}")

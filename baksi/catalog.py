@@ -45,6 +45,7 @@ class Module:
     default_plans: tuple[int, ...]
     default_prices: dict = field(default_factory=dict)   # {дней: центы} - цены при первом появлении модуля
     ui_schema: dict = field(default_factory=dict)        # что владелец может менять в «Оформлении»
+    bot_change_hint: str = ""                            # что сделать клиенту, если он подключил другого бота
     sort: int = 100
     extra: dict = field(default_factory=dict)
 
@@ -95,6 +96,7 @@ def load_modules(modules_dir: Path, default_mem_mb: int) -> dict[str, Module]:
                 default_plans=tuple(int(d) for d in raw.get("default_plans", DEFAULT_PLAN_DAYS)),
                 default_prices={int(k): int(v) for k, v in raw.get("default_prices", {}).items()},
                 ui_schema=dict(raw.get("ui") or {}),
+                bot_change_hint=str(raw.get("bot_change_hint", "")),
                 sort=int(raw.get("sort", 100)),
             )
         except Exception as exc:  # битый манифест не должен ронять платформу

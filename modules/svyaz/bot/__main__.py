@@ -110,6 +110,12 @@ class Svyaz:
         self.bot = bot
         self.db = db
         self.username = username
+        self.locks: dict[int, asyncio.Lock] = {}  # сообщения одного клиента по очереди (альбомы приходят пачкой)
+
+    def lock(self, user_id: int) -> asyncio.Lock:
+        if len(self.locks) > 5000:
+            self.locks = {k: v for k, v in self.locks.items() if v.locked()}
+        return self.locks.setdefault(user_id, asyncio.Lock())
 
     def opt(self, key: str) -> Any:
         """Своя настройка клиента → оформление от владельца платформы → значение по умолчанию."""
@@ -340,6 +346,11 @@ async def pick_dept(call: CallbackQuery, sv: Svyaz) -> None:
 
 @router.message(StateFilter(None), F.chat.type == "private", not_command)
 async def private_message(message: Message, sv: Svyaz) -> None:
+    async with sv.lock(message.from_user.id):
+        await _private_message(message, sv)
+
+
+async def _private_message(message: Message, sv: Svyaz) -> None:
     uid = message.from_user.id
     if await sv.is_staff(uid) or (sv.is_owner(uid) and await sv.db.one("SELECT 1 FROM active WHERE staff_id = ?", uid)):
         await staff_message(message, sv)

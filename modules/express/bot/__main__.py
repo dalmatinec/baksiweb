@@ -103,6 +103,9 @@ class Express:
         self.bot = bot
         self.db = db
         self.rate: dict[int, list[float]] = {}
+        # сообщения одного заказчика обрабатываем по очереди: альбом из 5 фото приходит одновременно,
+        # и без замка получилось бы 5 заявок вместо одной
+        self.user_locks: dict[int, asyncio.Lock] = {}
         self.admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
 
     def opt(self, key: str):
@@ -130,6 +133,11 @@ class Express:
             ok = False
         self.admin_cache[key] = (ok, time.monotonic())
         return ok
+
+    def lock(self, user_id: int) -> asyncio.Lock:
+        if len(self.user_locks) > 5000:
+            self.user_locks = {k: v for k, v in self.user_locks.items() if v.locked()}
+        return self.user_locks.setdefault(user_id, asyncio.Lock())
 
     def flood(self, user_id: int) -> bool:
         t = time.monotonic()
@@ -193,6 +201,11 @@ def not_command(message: Message) -> bool:
 
 @router.message(StateFilter(None), F.chat.type == "private", not_command)
 async def from_customer(message: Message, ex: Express) -> None:
+    async with ex.lock(message.from_user.id):
+        await _from_customer(message, ex)
+
+
+async def _from_customer(message: Message, ex: Express) -> None:
     user = message.from_user
     group = kit.bound_chat_id()
     if not group:

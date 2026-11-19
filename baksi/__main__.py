@@ -67,6 +67,9 @@ async def build(cfg: Config) -> App:
     from .accounts import Accounts
     app.accounts = Accounts(app)
     await app.accounts.migrate()
+    from .usdtpay import UsdtPay
+    app.usdt = UsdtPay(db, billing, notifier)
+    await app.usdt.migrate()
     return app
 
 
@@ -154,6 +157,7 @@ async def run(cfg: Config) -> None:
         t.cancel()
     await asyncio.gather(*tasks, return_exceptions=True)
     await app.pay.close()
+    await app.usdt.close()
     await app.bot.session.close()
     await app.db.close()
     log.info("Остановлено")

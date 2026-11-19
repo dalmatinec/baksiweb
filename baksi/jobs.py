@@ -41,6 +41,11 @@ async def payments_loop(app: App) -> None:
         except PaymentError as exc:
             log.warning("Опрос CryptoBot: %s", exc)
         except Exception:
+            log.exception("Ошибка опроса CryptoBot")
+        try:
+            for invoice in await app.usdt.poll():  # USDT напрямую: TON и TRC20
+                await handle_paid(app, invoice)
+        except Exception:
             log.exception("Ошибка опроса оплат")
 
 

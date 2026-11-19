@@ -619,7 +619,7 @@ async function pageProduct(slug, instanceId) {
         h("div", {}, h("span", {}, "На балансе"), h("span", {}, money(q.balance)))].filter(Boolean));
       payBtn.textContent = lack > 0 ? `Пополнить на ${money(Math.max(lack, 100))} и оплатить` : `Оплатить ${money(q.total)} с баланса`;
       payBtn.onclick = () => (lack > 0 ? topupAndBuy(payBtn, Math.max(lack, 100)) : buy(payBtn));
-      payBtn.disabled = lack > 0 && !S.cfg.payments.cryptobot;
+      payBtn.disabled = lack > 0 && !canPay();
     } catch (e) { toast(e.message, true); }
   }
   async function buy(btn) {
@@ -627,8 +627,7 @@ async function pageProduct(slug, instanceId) {
     if (r) { toast("Оплачено"); location.hash = `#/bot/${r.instance_id}`; }
   }
   async function topupAndBuy(btn, amount) {
-    const inv = await act(btn, () => api("POST", "/api/topup", { amount, intent: { action: "purchase", product: slug, days, promo: promo || null, instance_id: instanceId || null } }));
-    if (inv) watchInvoice(inv, () => { location.hash = "#/"; });
+    payFlow(amount, { action: "purchase", product: slug, days, promo: promo || null, instance_id: instanceId || null }, () => { location.hash = "#/"; });
   }
   const trialAvailable = !instanceId && p.trial_days > 0 && (await api("POST", "/api/quote", { product: slug, days }).then((q) => q.trial).catch(() => false));
   shell([
@@ -652,6 +651,71 @@ async function pageProduct(slug, instanceId) {
         !S.cfg.payments.cryptobot ? h("p", { class: "hint" }, "Пополнение пока недоступно. Напишите в поддержку.") : null)),
   ]);
   refresh();
+}
+
+// ---------- оплата: выбор способа и счёт USDT ----------
+function payMethods() {
+  const p = S.cfg.payments || {};
+  const m = [];
+  if ((p.usdt || []).includes("ton")) m.push(["usdt_ton", "USDT · сеть TON", "Комиссия сети - копейки"]);
+  if ((p.usdt || []).includes("trc20")) m.push(["usdt_trc20", "USDT · TRC20", "Сеть TRON"]);
+  if (p.cryptobot) m.push(["cryptobot", "@CryptoBot", "USDT, TON, BTC и другие монеты"]);
+  return m;
+}
+const canPay = () => payMethods().length > 0;
+
+function sheet(title, ...body) {
+  const close = () => { clearInterval(box._t); wrap.remove(); };
+  const box = h("div", { class: "sheet", role: "dialog", "aria-modal": "true", "aria-label": title },
+    h("div", { class: "sheet-head" }, h("h2", {}, title), h("button", { class: "btn small ghost", type: "button", "aria-label": "Закрыть", onclick: close }, "✕")),
+    h("div", { class: "sheet-body" }, body));
+  const wrap = h("div", { class: "sheet-wrap", onclick: (e) => { if (e.target === wrap) close(); } }, box);
+  document.addEventListener("keydown", function esc(e) { if (e.key === "Escape") { close(); document.removeEventListener("keydown", esc); } });
+  document.body.append(wrap);
+  return { box, close, body: box.querySelector(".sheet-body") };
+}
+
+function payFlow(amount, intent, onPaid) {
+  const methods = payMethods();
+  if (!methods.length) { toast("Пополнение пока недоступно, напишите в поддержку", true); return; }
+  const start = async (btn, method) => {
+    const inv = await act(btn, () => api("POST", "/api/topup", { amount, method, intent: intent || undefined }));
+    if (!inv) return;
+    if (method === "cryptobot") { s.close(); watchInvoice(inv, onPaid); return; }
+    usdtInvoice(s, inv, onPaid);
+  };
+  const s = sheet(`Пополнение на ${money(amount)}`,
+    h("p", { class: "muted" }, "Чем оплатить? USDT напрямую - без посредников, комиссия только сети."),
+    h("div", { class: "pay-methods" }, methods.map(([key, title, hint]) => h("button", { class: "pay-method", type: "button", onclick: (e) => start(e.currentTarget, key) },
+      h("span", { class: "pm-ico pm-" + key, "aria-hidden": "true" }, key === "usdt_ton" ? "💎" : key === "usdt_trc20" ? "🔺" : "🤖"),
+      h("span", {}, h("b", {}, title), h("span", { class: "hint" }, hint)), icon("chevron")))));
+  if (methods.length === 1) start(null, methods[0][0]);
+}
+
+function usdtInvoice(s, inv, onPaid) {
+  const status = h("div", { class: "pay-status" }, h("span", { class: "spinner", "aria-hidden": "true" }), "Жду перевод… проверяю каждые полминуты");
+  const row = (label, value, copyText) => h("div", { class: "pay-row" }, h("span", { class: "k" }, label),
+    h("code", {}, value), h("button", { class: "btn small", type: "button", onclick: () => copy(copyText || value) }, "Копировать"));
+  s.box.querySelector("h2").textContent = `Счёт #${inv.id} на ${money(inv.amount)}`;
+  s.body.replaceChildren(
+    h("div", { class: "pay-amount" }, h("span", { class: "k" }, "Переведите ровно"), h("b", {}, inv.usdt, h("small", {}, " USDT")),
+      h("span", { class: "pay-net" }, inv.net === "ton" ? "Сеть TON" : "Сеть TRON (TRC20)")),
+    row("Сумма", inv.usdt),
+    row("Адрес", inv.address),
+    inv.comment ? row("Комментарий", inv.comment) : null,
+    h("div", { class: "alert warn" }, "Только USDT и только в этой сети, иначе деньги потеряются. Сумма должна совпасть до последней цифры: по ней мы узнаём ваш платёж. С биржи учитывайте её комиссию."),
+    status,
+    h("button", { class: "btn primary wide", type: "button", onclick: async (e) => {
+      const r = await act(e.currentTarget, () => api("POST", `/api/invoices/${inv.id}/check`));
+      if (r && r.status === "active") toast("Пока не вижу перевода. TRC20 подтверждается 1–3 минуты");
+      if (r) done(r.status);
+    } }, "Я оплатил, проверить"),
+    h("p", { class: "hint", style: "text-align:center" }, `Счёт действует до ${dateTime(inv.expires_at)}. Можно закрыть окно: зачисление придёт само.`));
+  const done = (st) => {
+    if (st === "paid") { clearInterval(s.box._t); status.replaceChildren("✅ Оплата получена, баланс пополнен"); status.classList.add("ok"); toast(`Баланс пополнен на ${money(inv.amount)}`); setTimeout(() => { s.close(); onPaid && onPaid(); }, 1500); }
+    if (st === "expired") { clearInterval(s.box._t); status.replaceChildren("Срок счёта истёк. Создайте новый."); }
+  };
+  s.box._t = setInterval(async () => { try { done((await api("GET", `/api/invoices/${inv.id}`)).status); } catch (e) { /* сеть */ } }, 6000);
 }
 
 function watchInvoice(inv, onPaid) {
@@ -789,8 +853,7 @@ async function pageWallet() {
   const custom = h("input", { type: "text", inputmode: "decimal", placeholder: "Своя сумма, $", "aria-label": "Сумма пополнения" });
   const topup = async (btn, cents) => {
     if (!cents) { toast("Укажите сумму", true); return; }
-    const inv = await act(btn, () => api("POST", "/api/topup", { amount: cents }));
-    if (inv) watchInvoice(inv, () => route());
+    payFlow(cents, null, () => route());
   };
   const promoInput = h("input", { type: "text", placeholder: "Промокод", "aria-label": "Промокод", autocomplete: "off" });
   shell([
@@ -798,10 +861,10 @@ async function pageWallet() {
     h("div", { class: "balance" }, h("div", {}, h("div", { class: "k" }, "Баланс"), h("div", { class: "v" }, moneyBig(w.balance)))),
     h("div", { class: "grid2" },
       h("div", { class: "panel", style: "display:grid;gap:14px" }, h("h2", { style: "margin:0" }, "Пополнить"),
-        S.cfg.payments.cryptobot ? [
+        canPay() ? [
           h("div", { class: "actions" }, [500, 1000, 2500, 5000, 10000].map((c) => h("button", { class: "btn", onclick: (e) => topup(e.currentTarget, c) }, money(c).replace(".00", "")))),
           h("div", { style: "display:flex;gap:8px" }, custom, h("button", { class: "btn primary", onclick: (e) => topup(e.currentTarget, toCents(custom.value)) }, "Пополнить")),
-          h("p", { class: "hint" }, "Оплата в @CryptoBot: USDT, TON, BTC и другие. Зачисление автоматически в течение минуты."),
+          h("p", { class: "hint" }, "USDT напрямую в сетях TON и TRC20" + (S.cfg.payments.cryptobot ? " или через @CryptoBot" : "") + ". Зачисление автоматически."),
         ] : h("p", { class: "muted" }, "Пополнение пока недоступно, напишите в поддержку.")),
       h("div", { class: "panel", style: "display:grid;gap:14px" }, h("h2", { style: "margin:0" }, "Промокод на баланс"),
         h("div", { style: "display:flex;gap:8px" }, promoInput, h("button", { class: "btn", onclick: async (e) => {

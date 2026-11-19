@@ -15,6 +15,7 @@ from .. import design
 from ..app import App
 from ..accounts import AccountError
 from ..resilience import HubError, replace_hub, site_notice
+from ..usdtpay import UsdtError
 from ..billing import BillingError, InsufficientFunds, money
 from ..catalog import plan_label
 from ..cryptopay import PaymentError
@@ -211,7 +212,7 @@ def create_web(app: App) -> FastAPI:
     # --- публичное ------------------------------------------------------------
     @web.get("/api/config")
     async def config():
-        return {"brand": app.cfg.brand, "hub": app.hub_username, "notice": await site_notice(app), "payments": {"cryptobot": app.pay.enabled},
+        return {"brand": app.cfg.brand, "hub": app.hub_username, "notice": await site_notice(app), "payments": {"cryptobot": app.pay.enabled, "usdt": app.usdt.nets if app.usdt else []},
                 "support_url": await app.db.get_setting("support_url", ""),
                 "widget": bool(await app.db.get_setting("login_widget", app.cfg.secure_cookies)) and bool(app.hub_username),
                 "referral_percent": await app.db.get_setting("referral_percent", 0)}
@@ -352,18 +353,36 @@ def create_web(app: App) -> FastAPI:
             intent = body.get("intent") if isinstance(body.get("intent"), dict) else None
             if intent and intent.get("action") != "purchase":
                 intent = None
+            method = str(body.get("method") or "cryptobot")
+            if method.startswith("usdt_"):
+                return await app.usdt.create(user["id"], amount, method.removeprefix("usdt_"), intent)
             inv = await app.pay.create(user["id"], amount, intent)
-        except (PaymentError, ValueError) as exc:
+        except (PaymentError, UsdtError, ValueError) as exc:
             raise bad(exc)
         return inv
 
     @web.get("/api/invoices/{invoice_id}")
     async def invoice(invoice_id: int, user=Depends(current_user)):
-        row = await app.db.one("SELECT id, amount, status, pay_url, created_at, paid_at FROM invoices "
-                               "WHERE id = ? AND user_id = ?", invoice_id, user["id"])
+        row = await app.db.one("SELECT * FROM invoices WHERE id = ? AND user_id = ?", invoice_id, user["id"])
         if not row:
             raise HTTPException(404, "Счёт не найден")
-        return dict(row)
+        if str(row["provider"]).startswith("usdt_"):
+            return app.usdt.view(row)
+        return {k: row[k] for k in ("id", "amount", "status", "pay_url", "created_at", "paid_at")}
+
+    @web.post("/api/invoices/{invoice_id}/check")
+    async def invoice_check(invoice_id: int, request: Request, user=Depends(current_user)):
+        """«Я оплатил»: проверить поступления USDT прямо сейчас."""
+        limiter.check(client_ip(request), "paycheck", 6, 60)
+        row = await app.db.one("SELECT * FROM invoices WHERE id = ? AND user_id = ?", invoice_id, user["id"])
+        if not row:
+            raise HTTPException(404, "Счёт не найден")
+        if row["status"] == "active" and str(row["provider"]).startswith("usdt_"):
+            from ..jobs import handle_paid
+            for done in await app.usdt.poll(force=True):
+                await handle_paid(app, done)
+            row = await app.db.one("SELECT * FROM invoices WHERE id = ?", invoice_id)
+        return {"status": row["status"]}
 
     @web.get("/api/wallet")
     async def wallet(user=Depends(current_user), before: int | None = None):

@@ -279,15 +279,12 @@ async def topup_and_buy(call: CallbackQuery, app: App, state: FSMContext) -> Non
     try:
         q = await app.billing.quote(user["id"], slug, days, promo)
         need = max(q.total - user["balance"], 100)
-        inv = await app.pay.create(user["id"], need, {"action": "purchase", "product": slug, "days": days,
-                                                      "promo": q.promo, "instance_id": iid})
-    except (BillingError, PaymentError) as exc:
+    except BillingError as exc:
         await call.answer(str(exc), show_alert=True)
         return
-    await render(call, f"Счёт на <b>{money(inv['amount'])}</b> создан.\n\nОплатите его в @CryptoBot: "
-                       "как только оплата пройдёт, бот оплатится автоматически и придёт уведомление.",
-                 kb([b(f"💳 Оплатить {money(inv['amount'])}", url=inv["url"], style="success")],
-                    [b("⬅️ Назад", f"buy:{slug}:{days}" + (f":{iid}" if iid else ""))]))
+    back = f"buy:{slug}:{days}" + (f":{iid}" if iid else "")
+    await choose_method(call, app, state, need, {"action": "purchase", "product": slug, "days": days,
+                                                  "promo": q.promo, "instance_id": iid}, back)
 
 
 @router.callback_query(F.data.startswith("trial:"))
@@ -526,7 +523,7 @@ async def wallet(call: CallbackQuery, app: App, state: FSMContext) -> None:
         lines += [f"{'+' if o['amount'] > 0 else ''}{money(o['amount'])} · {esc(o['note'])} · "
                   f"{fmt_date(o['created_at'])}" for o in ops]
     rows = []
-    if app.pay.enabled:
+    if pay_methods(app):
         presets = [b(money(c).replace(".00", ""), f"top:{c}") for c in TOPUP_PRESETS]
         rows += [presets[:3], presets[3:] + [b("Другая сумма", "top:custom")]]
     else:
@@ -536,19 +533,96 @@ async def wallet(call: CallbackQuery, app: App, state: FSMContext) -> None:
     await render(call, "\n".join(lines), kb(*rows))
 
 
-async def _send_invoice(target: Message | CallbackQuery, app: App, cents: int) -> None:
+def pay_methods(app: App) -> list[tuple[str, str]]:
+    """Способы пополнения, которые сейчас включены: USDT напрямую (TON, TRC20) и CryptoBot."""
+    methods = []
+    if app.usdt and "ton" in app.usdt.nets:
+        methods.append(("usdt_ton", "💎 USDT · сеть TON"))
+    if app.usdt and "trc20" in app.usdt.nets:
+        methods.append(("usdt_trc20", "🔺 USDT · TRC20"))
+    if app.pay.enabled:
+        methods.append(("cryptobot", "🤖 @CryptoBot: USDT, TON, BTC и др."))
+    return methods
+
+
+async def choose_method(target: Message | CallbackQuery, app: App, state: FSMContext, cents: int,
+                        intent: dict | None = None, back: str = "wallet") -> None:
+    methods = pay_methods(app)
+    if not methods:
+        text = "Пополнение пока недоступно, напишите в поддержку."
+        if isinstance(target, CallbackQuery):
+            await target.answer(text, show_alert=True)
+        else:
+            await target.answer(text)
+        return
+    if len(methods) == 1:
+        await create_invoice(target, app, methods[0][0], cents, intent, back)
+        return
+    await state.update_data(pay_intent=intent, pay_cents=cents, pay_back=back)
+    await render(target, f"Пополнение на <b>{money(cents)}</b>. Чем оплатить?\n\n"
+                         "USDT напрямую - без посредников, комиссия только сети. В сети TON она копеечная.",
+                 kb(*[[b(label, f"tpv:{key}:{cents}", style="primary" if i == 0 else None)]
+                      for i, (key, label) in enumerate(methods)], [b("⬅️ Назад", back)]))
+
+
+@router.callback_query(F.data.startswith("tpv:"))
+async def pay_method(call: CallbackQuery, app: App, state: FSMContext) -> None:
+    _, method, cents = call.data.split(":")
+    data = await state.get_data()
+    same = data.get("pay_cents") == int(cents)
+    await create_invoice(call, app, method, int(cents), data.get("pay_intent") if same else None,
+                         data.get("pay_back", "wallet") if same else "wallet")
+
+
+async def create_invoice(target: Message | CallbackQuery, app: App, method: str, cents: int,
+                         intent: dict | None = None, back: str = "wallet") -> None:
+    from ..usdtpay import UsdtError
     try:
-        inv = await app.pay.create(target.from_user.id, cents)
-    except PaymentError as exc:
+        if method.startswith("usdt_"):
+            inv = await app.usdt.create(target.from_user.id, cents, method.removeprefix("usdt_"), intent)
+        else:
+            inv = await app.pay.create(target.from_user.id, cents, intent)
+    except (PaymentError, UsdtError) as exc:
         if isinstance(target, CallbackQuery):
             await target.answer(str(exc), show_alert=True)
         else:
             await target.answer(f"❌ {esc(exc)}")
         return
-    await render(target, f"Счёт на <b>{money(inv['amount'])}</b>. Оплатите в @CryptoBot (USDT, TON, BTC и др.): "
-                         "зачисление придёт автоматически в течение минуты.",
+    if method.startswith("usdt_"):
+        await render(target, app.usdt.instructions(inv), kb(
+            [b("📋 Адрес", copy=inv["address"]), b(f"📋 Сумма {inv['usdt']}", copy=inv["usdt"])],
+            [b("📋 Комментарий", copy=inv["comment"])] if inv["comment"] else None,
+            [b("🔄 Я оплатил, проверить", f"uchk:{inv['id']}", style="success")],
+            [b("⬅️ Кошелёк", "wallet")]))
+        return
+    after = ("как только оплата пройдёт, бот оплатится автоматически и придёт уведомление." if intent
+             else "зачисление придёт автоматически в течение минуты.")
+    await render(target, f"Счёт на <b>{money(inv['amount'])}</b>. Оплатите в @CryptoBot (USDT, TON, BTC и др.): {after}",
                  kb([b(f"💳 Оплатить {money(inv['amount'])}", url=inv["url"], style="success")],
-                    [b("⬅️ Кошелёк", "wallet")]))
+                    [b("⬅️ Назад", back)]))
+
+
+@router.callback_query(F.data.startswith("uchk:"))
+async def usdt_check(call: CallbackQuery, app: App) -> None:
+    inv_id = int(call.data.split(":")[1])
+    row = await app.db.one("SELECT * FROM invoices WHERE id = ? AND user_id = ?", inv_id, call.from_user.id)
+    if not row:
+        await call.answer()
+        return
+    if row["status"] == "active":
+        from ..jobs import handle_paid
+        for done in await app.usdt.poll(force=True):
+            await handle_paid(app, done)
+        row = await app.db.one("SELECT * FROM invoices WHERE id = ?", inv_id)
+    if row["status"] == "paid":
+        await call.answer("Оплата получена ✅")
+        await render(call, f"✅ <b>Счёт #{inv_id} оплачен</b>, баланс пополнен на {money(row['amount'])}.",
+                     kb([b("💳 Кошелёк", "wallet")], [b("🏠 Главное меню", "home")]))
+    elif row["status"] == "expired":
+        await call.answer("Срок счёта истёк. Создайте новый, а если уже перевели - напишите в поддержку.", show_alert=True)
+    else:
+        await call.answer("Пока не вижу перевода. TRC20 подтверждается 1–3 минуты, TON - быстрее. Я проверяю сам "
+                          "каждые полминуты и пришлю уведомление.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("top:"))
@@ -559,7 +633,7 @@ async def topup(call: CallbackQuery, app: App, state: FSMContext) -> None:
         await call.message.answer("Введите сумму в долларах, например 15 или 7.5")
         await call.answer()
         return
-    await _send_invoice(call, app, int(arg))
+    await choose_method(call, app, state, int(arg))
 
 
 @router.message(Form.topup_amount, F.text)
@@ -569,7 +643,7 @@ async def topup_amount(message: Message, app: App, state: FSMContext) -> None:
         await message.answer("Не понял сумму. Напишите число, например 20")
         return
     await state.set_state(None)
-    await _send_invoice(message, app, cents)
+    await choose_method(message, app, state, cents)
 
 
 @router.callback_query(F.data == "bpromo")

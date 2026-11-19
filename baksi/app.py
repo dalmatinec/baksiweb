@@ -36,6 +36,7 @@ class App:
     hub_username: str = ""
     design: HubDesign = field(default_factory=HubDesign)
     accounts: Any = None  # baksi.accounts.Accounts
+    usdt: Any = None      # baksi.usdtpay.UsdtPay - пополнение напрямую в USDT (TON, TRC20)
     hub_mode: str = "main"   # main | reserve - какой хаб-бот сейчас работает
     hub_token: str = ""
     request_stop: Any = None  # перезапуск платформы (контейнер поднимется сам)

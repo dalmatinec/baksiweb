@@ -109,7 +109,8 @@ class CryptoPay:
                 await self.db.run("UPDATE invoices SET status = 'expired' WHERE id = ? AND status = 'active'",
                                   row["id"])
         # счета, о которых CryptoBot уже забыл
-        await self.db.run("UPDATE invoices SET status = 'expired' WHERE status = 'active' AND created_at < ?",
+        await self.db.run("UPDATE invoices SET status = 'expired' WHERE provider = 'cryptobot' AND status = 'active' "
+                          "AND created_at < ?",
                           now() - INVOICE_TTL - 600)
         return paid
 

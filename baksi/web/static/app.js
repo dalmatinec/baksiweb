@@ -97,6 +97,10 @@ const ICONS = {
   card: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/>',
   cog: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   back: '<path d="M15 18l-6-6 6-6"/>',
+  shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/>',
+  key: '<circle cx="7.5" cy="15.5" r="4.5"/><path d="M10.7 12.3 20 3M16 7l3 3M14 9l2 2"/>',
+  chevron: '<path d="M9 18l6-6-6-6"/>',
+  eye: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
   palette: '<path d="M12 22a10 10 0 1 1 10-10c0 2.2-1.8 3-3.5 3H16a2 2 0 0 0-1.4 3.4A2 2 0 0 1 12 22z"/><circle cx="7.5" cy="10.5" r="1.2"/><circle cx="11" cy="6.5" r="1.2"/><circle cx="16" cy="8" r="1.2"/>',
 };
 const icon = (name) => h("span", { "aria-hidden": "true", html: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ""}</svg>` });
@@ -220,6 +224,7 @@ function daysLeft(b) {
 function navItems() {
   const items = [
     ["#/", "Мои боты", "bots"], ["#/catalog", "Каталог", "catalog"], ["#/wallet", "Кошелёк", "wallet"], ["#/referrals", "Рефералы", "gift"],
+    ["#/security", "Безопасность", "shield"],
   ];
   const admin = [
     ["#/admin", "Обзор", "chart"], ["#/admin/instances", "Копии ботов", "server"], ["#/admin/users", "Клиенты", "users"],
@@ -247,7 +252,7 @@ function shell(content) {
       h("span", {}, "ID " + S.me.id),
       TG ? null : h("button", { class: "btn small ghost", onclick: logout }, "Выйти")));
   const tabs = h("nav", { class: "tabbar", "aria-label": "Разделы" },
-    [...items, ...(admin.length ? [["#/admin", "Админка", "chart"]] : [])].map(([href, label, ic]) =>
+    [...items.filter(([href]) => href !== "#/referrals"), ...(admin.length ? [["#/admin", "Админка", "chart"]] : [])].map(([href, label, ic]) =>
       h("a", { href, class: isActive(href) || (href === "#/admin" && location.hash.startsWith("#/admin")) ? "on" : null }, icon(ic), label)));
   const subnav = admin.length && location.hash.startsWith("#/admin")
     ? h("nav", { class: "admin-subnav", "aria-label": "Разделы админки" }, admin.map(([href, label]) => h("a", { href, class: isActive(href) ? "btn small primary" : "btn small" }, label)))
@@ -265,33 +270,197 @@ async function logout() {
   location.href = "/";
 }
 
-// ---------- вход ----------
+// ---------- вход и регистрация ----------
+function passwordField(placeholder, autocomplete) {
+  const input = h("input", { type: "password", placeholder, autocomplete, required: true, minlength: 8, maxlength: 128 });
+  const toggle = h("button", { type: "button", class: "pw-eye", "aria-label": "Показать пароль", onclick: () => {
+    input.type = input.type === "password" ? "text" : "password";
+    toggle.classList.toggle("on", input.type === "text");
+  } }, icon("eye"));
+  return { input, el: h("div", { class: "pw" }, input, toggle) };
+}
+
 function renderLogin(expired) {
   clearInterval(S.timer);
   const hub = S.cfg && S.cfg.hub;
-  const box = h("div", { class: "box" },
-    h("span", { class: "logo-mark", style: "width:56px;height:56px;font-size:26px;border-radius:18px" }, "B"),
-    h("h1", {}, S.cfg ? S.cfg.brand : "Кабинет"),
-    h("p", { class: "muted" }, expired ? "Ссылка для входа устарела или уже использована. Получите новую в боте." :
-      "Вход без пароля: бот пришлёт одноразовую ссылку в Telegram."),
-    hub ? h("a", { class: "btn primary wide", href: `https://t.me/${hub}?start=login` }, "Получить ссылку для входа") : null);
-  if (hub && S.cfg.widget) {
-    const w = document.createElement("script");
-    w.async = true;
-    w.src = "https://telegram.org/js/telegram-widget.js?22";
-    w.setAttribute("data-telegram-login", hub);
-    w.setAttribute("data-size", "large");
-    w.setAttribute("data-auth-url", location.origin + "/auth/widget");
-    w.setAttribute("data-request-access", "write");
-    box.append(h("p", { class: "hint" }, "или"), w);
+  let mode = location.hash === "#/signup" ? "signup" : "login";
+  const box = h("div", { class: "auth-card" });
+  const tgButton = () => hub ? h("a", { class: "btn wide tg-btn", href: `https://t.me/${hub}?start=login` },
+    h("span", { class: "tg-mark", "aria-hidden": "true", html: '<svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M21.9 4.6 18.7 19.8c-.2 1.1-.9 1.4-1.8.9l-4.9-3.6-2.4 2.3c-.3.3-.5.5-1 .5l.4-5 9.1-8.2c.4-.4-.1-.6-.6-.2L6.2 13.6l-4.8-1.5c-1-.3-1.1-1 .2-1.5L20.5 3.3c.9-.3 1.6.2 1.4 1.3z"/></svg>' }),
+    "Войти через Telegram") : null;
+
+  function draw() {
+    const err = h("div", { class: "auth-error", role: "alert" });
+    const fail = (m) => { err.textContent = m; err.classList.add("on"); };
+    const tabs = h("div", { class: "seg", role: "tablist" },
+      ["login", "signup"].map((m) => h("button", { type: "button", role: "tab", "aria-selected": String(mode === m), class: mode === m ? "on" : null,
+        onclick: () => { mode = m; draw(); } }, m === "login" ? "Вход" : "Регистрация")));
+    const login = h("input", { type: "text", placeholder: "Логин", autocomplete: "username", required: true, minlength: 3, maxlength: 32, autocapitalize: "none", spellcheck: "false" });
+    const pass = passwordField(mode === "login" ? "Пароль" : "Пароль, от 8 символов", mode === "login" ? "current-password" : "new-password");
+    const pass2 = mode === "signup" ? passwordField("Повторите пароль", "new-password") : null;
+    const submit = h("button", { class: "btn primary wide", type: "submit" }, mode === "login" ? "Войти" : "Создать аккаунт");
+    const form = h("form", { class: "auth-form", novalidate: true, onsubmit: async (e) => {
+      e.preventDefault();
+      err.classList.remove("on");
+      if (!login.value.trim() || !pass.input.value) { fail("Заполните логин и пароль"); return; }
+      if (mode === "signup" && pass.input.value !== pass2.input.value) { fail("Пароли не совпадают"); return; }
+      submit.disabled = true;
+      try {
+        if (mode === "login") {
+          const r = await api("POST", "/api/auth/login", { login: login.value.trim(), password: pass.input.value });
+          S.token = r.token; sessionStorage.setItem("bc_token", r.token);
+          location.hash = "#/"; await loadMe(); route();
+        } else {
+          const r = await api("POST", "/api/auth/signup", { login: login.value.trim(), password: pass.input.value, password2: pass2.input.value });
+          confirmStep(r);
+        }
+      } catch (ex) { fail(ex.message); } finally { submit.disabled = false; }
+    } },
+      h("label", { class: "field" }, h("span", {}, "Логин"), login),
+      h("label", { class: "field" }, h("span", {}, "Пароль"), pass.el),
+      pass2 ? h("label", { class: "field" }, h("span", {}, "Ещё раз"), pass2.el) : null,
+      err, submit);
+    const forgot = h("details", { class: "auth-help" }, h("summary", {}, "Забыли пароль или потеряли Telegram?"),
+      h("p", {}, "Пароль: откройте бота", hub ? h("a", { href: `https://t.me/${hub}`, target: "_blank", rel: "noopener" }, ` @${hub}`) : "",
+        " → «🔐 Безопасность» → «Пароль для сайта» и задайте новый."),
+      h("p", {}, "Потеряли Telegram: с нового аккаунта отправьте боту /recover и введите ключ восстановления, или сделайте это с запасного Telegram. Аккаунт перейдёт через 24 часа."));
+    box.replaceChildren(...[
+      h("a", { class: "logo auth-logo", href: "/" }, h("span", { class: "logo-mark", "aria-hidden": "true" }, "B"), S.cfg ? S.cfg.brand : "Baksi Cloud"),
+      expired ? h("div", { class: "alert warn" }, "Ссылка для входа устарела или уже использована. Войдите снова.") : null,
+      tabs,
+      h("p", { class: "auth-lead" }, mode === "login" ? "С возвращением. Войдите по логину и паролю или через Telegram."
+        : "Логин и пароль для сайта. Следующим шагом привяжете Telegram одной кнопкой: через него работают боты и уведомления."),
+      form,
+      hub ? h("div", { class: "auth-or" }, h("span", {}, "или")) : null,
+      tgButton(),
+      mode === "login" ? forgot : h("p", { class: "hint", style: "text-align:center" }, "Регистрируясь, вы получаете один аккаунт: в Telegram и на сайте.")].filter(Boolean));
+    if (hub && S.cfg.widget && mode === "login") {
+      const w = document.createElement("script");
+      w.async = true;
+      w.src = "https://telegram.org/js/telegram-widget.js?22";
+      w.setAttribute("data-telegram-login", hub);
+      w.setAttribute("data-size", "large");
+      w.setAttribute("data-radius", "14");
+      w.setAttribute("data-auth-url", location.origin + "/auth/widget");
+      w.setAttribute("data-request-access", "write");
+      box.append(h("div", { class: "auth-widget" }, w));
+    }
+    setTimeout(() => login.focus(), 50);
   }
+
+  function confirmStep(r) {
+    clearInterval(S.timer);
+    const status = h("div", { class: "auth-wait" }, h("span", { class: "spinner", "aria-hidden": "true" }), "Ждём подтверждения в Telegram…");
+    box.replaceChildren(
+      h("a", { class: "logo auth-logo", href: "/" }, h("span", { class: "logo-mark", "aria-hidden": "true" }, "B"), S.cfg.brand),
+      h("div", { class: "auth-steps" }, h("span", { class: "done" }, "1. Логин и пароль"), h("span", { class: "on" }, "2. Telegram")),
+      h("h2", { class: "auth-title" }, "Привяжите Telegram"),
+      h("p", { class: "auth-lead" }, "Нажмите кнопку, в Telegram откроется наш бот. Нажмите в нём «Запустить», и эта страница сама войдёт в кабинет."),
+      h("a", { class: "btn primary wide tg-btn", href: r.link, target: "_blank", rel: "noopener", onclick: (e) => { if (TG) { e.preventDefault(); openLink(r.link); } } }, "Открыть Telegram"),
+      status,
+      h("button", { class: "btn ghost small", type: "button", onclick: () => copy(r.link) }, "Скопировать ссылку"),
+      h("p", { class: "hint", style: "text-align:center" }, "Ссылка действует 30 минут."),
+      h("button", { class: "btn ghost small", type: "button", onclick: () => { clearInterval(S.timer); draw(); } }, "Назад"));
+    const started = Date.now();
+    S.timer = setInterval(async () => {
+      if (Date.now() - started > 30 * 60 * 1000) { clearInterval(S.timer); status.textContent = "Время вышло. Начните регистрацию заново."; return; }
+      try {
+        const st = await api("GET", `/api/auth/signup/${encodeURIComponent(r.token)}`);
+        if (st.ok) {
+          clearInterval(S.timer);
+          S.token = st.token; sessionStorage.setItem("bc_token", st.token);
+          location.hash = "#/"; await loadMe(); toast("Аккаунт создан"); route();
+        }
+      } catch (ex) { if (ex.status === 410) { clearInterval(S.timer); status.textContent = ex.message; } }
+    }, 2000);
+  }
+
+  draw();
   $root().replaceChildren(h("div", { class: "login" }, box));
+}
+
+// ---------- безопасность ----------
+async function pageSecurity() {
+  const sec = await api("GET", "/api/security");
+  S.security = sec;
+  const hub = S.cfg.hub;
+  const item = (ok, title, desc, ...actions) => h("div", { class: "sec-item" + (ok ? " ok" : "") },
+    h("span", { class: "sec-dot", "aria-hidden": "true" }, ok ? "✓" : ""),
+    h("div", { class: "grow" }, h("b", {}, title), h("p", {}, desc), actions.length ? h("div", { class: "actions" }, actions) : null));
+  const reveal = h("div");
+
+  // пароль
+  const login = h("input", { type: "text", value: sec.login || "", placeholder: "Логин", autocomplete: "username", autocapitalize: "none", spellcheck: "false" });
+  const p1 = passwordField("Новый пароль, от 8 символов", "new-password");
+  const p2 = passwordField("Повторите пароль", "new-password");
+  const pwForm = h("form", { class: "sec-form", onsubmit: async (e) => {
+    e.preventDefault();
+    if (p1.input.value !== p2.input.value) { toast("Пароли не совпадают", true); return; }
+    const r = await act(e.submitter, () => api("POST", "/api/security/password", { login: login.value.trim(), password: p1.input.value, password2: p2.input.value }));
+    if (r) { toast(sec.login ? "Пароль изменён" : "Вход по паролю включён"); route(); }
+  } }, h("label", { class: "field" }, h("span", {}, "Логин"), login),
+    h("label", { class: "field" }, h("span", {}, sec.login ? "Новый пароль" : "Пароль"), p1.el),
+    h("label", { class: "field" }, h("span", {}, "Ещё раз"), p2.el),
+    h("button", { class: "btn primary", type: "submit" }, sec.login ? "Сменить пароль" : "Включить вход по паролю"));
+
+  const showKey = async (e) => {
+    if (sec.has_key && !confirm("Создать новый ключ? Прежний сразу перестанет работать.")) return;
+    const r = await act(e.currentTarget, () => api("POST", "/api/security/key"));
+    if (!r) return;
+    reveal.replaceChildren(h("div", { class: "key-box" },
+      h("span", { class: "k" }, "Ваш ключ восстановления"), h("code", {}, r.key),
+      h("p", { class: "hint" }, "Показываем один раз. Сохраните вне Telegram: в менеджере паролей или на бумаге."),
+      h("div", { class: "actions" }, h("button", { class: "btn primary small", onclick: () => copy(r.key) }, "Скопировать"),
+        h("button", { class: "btn small", onclick: () => { reveal.replaceChildren(); route(); } }, "Я сохранил"))));
+    reveal.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+  const linkBox = (title, link, note) => h("div", { class: "key-box" }, h("span", { class: "k" }, title), h("code", { class: "link" }, link),
+    h("p", { class: "hint" }, note), h("div", { class: "actions" }, h("button", { class: "btn primary small", onclick: () => copy(link) }, "Скопировать"),
+      h("a", { class: "btn small", href: link, target: "_blank", rel: "noopener" }, "Открыть")));
+  const reserve = async (e) => {
+    const r = await act(e.currentTarget, () => api("POST", "/api/security/reserve"));
+    if (r) reveal.replaceChildren(linkBox("Ссылка для запасного Telegram", r.link, "Откройте её со второго аккаунта и нажмите «Запустить». Действует сутки."));
+  };
+  const move = async (e) => {
+    const r = await act(e.currentTarget, () => api("POST", "/api/security/move"));
+    if (r) reveal.replaceChildren(linkBox("Ссылка для переноса на другой Telegram", r.link,
+      "Откройте с нового аккаунта. Перенос произойдёт через 24 часа, текущий Telegram получит уведомление и сможет отменить. Действует час."));
+  };
+
+  const t = sec.transfer;
+  const score = [sec.has_key, !!sec.reserve_id, !!sec.login].filter(Boolean).length;
+  shell([
+    head("Безопасность"),
+    t ? h("div", { class: "alert bad sec-transfer" },
+      h("div", {}, h("b", {}, "Запрошен перенос аккаунта"), h("p", {}, `На Telegram ID ${t.new_id}. Состоится ${dateTime(t.execute_at)}. Если это не вы, отмените.`)),
+      h("button", { class: "btn danger", onclick: async (e) => { if (await act(e.currentTarget, () => api("POST", "/api/security/cancel-transfer"), "Перенос отменён")) route(); } }, "Отменить перенос")) : null,
+    h("div", { class: "sec-hero panel" },
+      ring(Math.round(score / 3 * 100), score === 3 ? "var(--ok)" : score ? "var(--warn)" : "var(--bad)", `${score}/3`),
+      h("div", {}, h("h2", {}, score === 3 ? "Аккаунт под защитой" : "Защитите доступ к ботам"),
+        h("p", { class: "muted" }, "Аккаунт привязан к Telegram. Если его заблокируют или удалят, вернуть боты и баланс помогут эти способы. Любой перенос идёт с задержкой 24 часа и предупреждением, тайком забрать аккаунт не получится."))),
+    reveal,
+    h("div", { class: "panel sec-list" },
+      item(sec.has_key, "Ключ восстановления", sec.has_key ? `Создан ${date(sec.key_at)}, с ним можно вернуть аккаунт с нового Telegram: команда /recover в боте.` : "Код вида BAKSI-XXXX-XXXX-XXXX-XXXX. Хранится только у вас.",
+        h("button", { class: sec.has_key ? "btn small" : "btn primary small", onclick: showKey }, icon("key"), sec.has_key ? "Новый ключ" : "Получить ключ")),
+      item(!!sec.reserve_id, "Запасной Telegram", sec.reserve_id ? `Указан: ${sec.reserve_name || sec.reserve_id}. С него можно перенести аккаунт, если основной пропадёт.` : "Второй ваш аккаунт или человека, которому доверяете. Необязательно, но надёжнее всего.",
+        h("button", { class: sec.reserve_id ? "btn small" : "btn primary small", onclick: reserve }, sec.reserve_id ? "Сменить" : "Указать"),
+        sec.reserve_id ? h("button", { class: "btn small ghost", onclick: async (e) => { if (await act(e.currentTarget, () => api("POST", "/api/security/reserve/remove"), "Убран")) route(); } }, "Убрать") : null),
+      item(!!sec.login, "Вход на сайт по паролю", sec.login ? `Логин: ${sec.login}. Заходите на сайт даже без Telegram.` : "Логин и пароль, чтобы заходить на сайт без Telegram.")),
+    h("div", { class: "grid2" },
+      h("div", { class: "panel" }, h("h2", {}, sec.login ? "Сменить пароль" : "Включить вход по паролю"), pwForm),
+      h("div", { class: "panel sec-side" }, h("h2", {}, "Перенести на другой Telegram"),
+        h("p", { class: "muted" }, "Если меняете аккаунт заранее: получите ссылку и откройте её с нового Telegram. Боты, баланс и права в /admin перейдут через 24 часа."),
+        h("button", { class: "btn", onclick: move }, "Получить ссылку"),
+        h("h2", { style: "margin-top:22px" }, "Потеряли Telegram?"),
+        h("p", { class: "muted" }, "С нового аккаунта откройте ", hub ? h("a", { href: `https://t.me/${hub}`, target: "_blank", rel: "noopener" }, "@" + hub) : "бота",
+          " и отправьте /recover. Подойдёт ключ восстановления или запасной Telegram. Если не осталось ни того, ни другого, напишите в поддержку."))),
+  ]);
 }
 
 // ---------- мои боты ----------
 async function loadMe() {
   const r = await api("GET", "/api/me");
-  S.me = r.user; S.bots = r.bots;
+  S.me = r.user; S.bots = r.bots; S.security = r.security || {};
 }
 
 async function pageHome() {
@@ -309,19 +478,37 @@ async function pageHome() {
   });
   const spent = w.items.filter((o) => o.amount < 0 && o.created_at > Date.now() / 1000 - 30 * 86400).reduce((a, o) => a - o.amount, 0);
   const color = { ok: "var(--ok)", warn: "var(--warn)", bad: "var(--bad)", idle: "var(--ink-3)" };
-  const cards = S.bots.map((b) => {
+  const order = { bad: 0, warn: 1, idle: 2, ok: 3 };
+  const barColor = (b, dl) => {
+    if (b.forever) return "var(--ok)";
+    const left = (b.expires_at - Date.now() / 1000) / 86400;
+    return left < 2 ? "var(--bad)" : left < 5 || dl.pct < 0.2 ? "var(--warn)" : "var(--accent)";
+  };
+  const sorted = [...S.bots].sort((a, b) => order[STATUS[a.status] || "idle"] - order[STATUS[b.status] || "idle"]);
+  const rows = sorted.map((b) => {
     const dl = daysLeft(b);
-    return h("a", { class: "bot-card", href: `#/bot/${b.id}` },
-      h("div", { class: "top" }, avatar(b), h("div", { style: "min-width:0" }, h("div", { class: "name" }, b.title), h("div", { class: "user" }, b.bot_username ? "@" + b.bot_username : "токен не подключён"))),
-      h("div", { class: "bottom" }, h("div", { style: "display:grid;gap:6px" }, badge(b), h("span", { class: "hint" }, b.forever ? "Бессрочно" : (b.trial ? "Пробный до " : "До ") + date(b.expires_at))),
-        h("div", { style: "display:grid;justify-items:center" }, ring(dl.pct, color[STATUS[b.status] || "idle"], dl.text), h("span", { class: "hint", style: "font-size:11px" }, dl.hint))));
+    const tone = STATUS[b.status] || "idle";
+    return h("a", { class: "bot-line", href: `#/bot/${b.id}` },
+      avatar(b),
+      h("span", { class: "bl-main" },
+        h("span", { class: "bl-name" }, b.bot_username ? "@" + b.bot_username : b.title, h("span", { class: "bl-type" }, b.title)),
+        h("span", { class: "bl-status " + tone }, h("i", {}), b.status_text)),
+      h("span", { class: "bl-days" },
+        h("b", {}, b.forever ? "∞" : dl.text), h("span", { class: "bl-bar" }, h("span", { style: `width:${Math.max(4, Math.min(100, Math.round(dl.pct * 100)))}%;background:${barColor(b, dl)}` })),
+        h("span", { class: "hint" }, b.forever ? "бессрочно" : dl.hint)),
+      h("span", { class: "bl-go" }, icon("chevron")));
   });
-  cards.push(h("a", { class: "bot-card", href: "#/catalog", style: "place-content:center;justify-items:center;text-align:center;min-height:150px;border-style:dashed;border-color:rgba(255,255,255,.14)" },
-    h("span", { style: "font-size:30px;font-weight:300;line-height:1" }, "+"), h("b", {}, S.bots.length ? "Ещё один бот" : "Первый бот"), h("span", { class: "hint" }, "запуск за пару минут")));
+  rows.push(h("a", { class: "bot-line add", href: "#/catalog" }, h("span", { class: "avatar add" }, "+"),
+    h("span", { class: "bl-main" }, h("span", { class: "bl-name" }, S.bots.length ? "Ещё один бот" : "Первый бот"), h("span", { class: "hint" }, "запуск за пару минут"))));
+  const sec = S.security || {};
+  const protect = !sec.has_key || !sec.reserve_id;
+  const transfer = sec.transfer;
   shell([
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, `Привет${S.me.first_name ? ", " + S.me.first_name : ""}`),
       h("div", { class: "sub" }, S.bots.length ? `Работают ${running} из ${S.bots.length} ботов` : "Здесь будут ваши боты")),
       h("a", { class: "btn primary", href: "#/catalog" }, "Новый бот")),
+    transfer ? h("div", { class: "alert bad" }, h("b", {}, "Запрошен перенос аккаунта на другой Telegram. "), `Состоится ${dateTime(transfer.execute_at)}. `,
+      h("a", { href: "#/security" }, "Если это не вы, отмените")) : null,
     problems.length ? h("div", { class: "alert warn" }, `Требуют внимания: ${problems.map((b) => `${b.title}${b.bot_username ? " @" + b.bot_username : ""}`).join(", ")}. Откройте бота, там подсказка, что сделать.`) : null,
     h("div", { class: "dash" },
       h("div", { class: "stack" },
@@ -331,7 +518,7 @@ async function pageHome() {
               h("div", { class: "hint" }, spent ? `Потрачено за 30 дней: ${money(spent)}` : "Списаний за 30 дней не было")),
             h("div", { class: "actions" }, h("a", { class: "btn primary", href: "#/wallet" }, "Пополнить"), h("a", { class: "btn", href: "#/wallet" }, "История"))),
           ops.length ? areaChart(series, { height: 190, format: shortMoney }) : null),
-        h("div", { class: "panel" }, h("h2", {}, "Мои боты"), h("div", { class: "bot-cards" }, cards))),
+        h("div", { class: "panel flush" }, h("h2", { class: "bl-head" }, "Мои боты", S.bots.length ? h("span", { class: "count" }, S.bots.length) : null), h("div", { class: "bot-lines" }, rows))),
       h("div", { class: "stack" },
         h("div", { class: "panel flush" }, h("h2", {}, "Последние операции", h("a", { href: "#/wallet", style: "font-size:14px;font-weight:500" }, "Все")),
           w.items.length ? h("div", { class: "list" }, w.items.slice(0, 7).map((o) => h("div", { class: "row", style: "cursor:default" },
@@ -339,6 +526,11 @@ async function pageHome() {
             h("span", { class: "grow" }, h("span", { class: "title", style: "font-weight:500" }, o.note), h("span", { class: "meta" }, dateTime(o.created_at))),
             h("b", { class: o.amount > 0 ? "pos" : "" }, (o.amount > 0 ? "+" : "") + money(o.amount)))))
             : h("div", { class: "empty" }, "Операций пока нет.")),
+        protect && S.bots.length ? h("a", { class: "protect-card", href: "#/security" },
+          h("span", { class: "pc-icon", "aria-hidden": "true" }, icon("shield")),
+          h("span", {}, h("b", {}, "Защитите доступ к ботам"),
+            h("span", { class: "pc-checks" }, h("span", { class: sec.has_key ? "on" : null }, "Ключ восстановления"), h("span", { class: sec.reserve_id ? "on" : null }, "Запасной Telegram")),
+            h("span", { class: "hint" }, "Если Telegram заблокируют, так вы вернёте боты и баланс. Две минуты."))) : null,
         h("a", { class: "tile accent", href: "#/referrals", style: "text-decoration:none" }, h("span", { class: "k" }, "Рефералы"),
           h("span", { style: "font-size:18px;font-weight:600" }, "Приглашайте друзей"), h("span", { class: "s" }, "Ссылка и бонусы - в разделе «Рефералы»")))),
   ]);
@@ -710,6 +902,33 @@ async function pageAdminUser(id) {
           const res = await act(e.currentTarget, () => api("POST", `/api/admin/users/${id}`, { action: "balance", amount: neg ? -c : c, note: note.value }));
           if (res) { toast(`Баланс: ${money(res.balance)}`); route(); }
         } }, "Применить"))),
+    (() => {
+      const sec = r.security || {};
+      const newId = h("input", { type: "text", inputmode: "numeric", placeholder: "Новый Telegram ID", "aria-label": "Новый Telegram ID" });
+      const methods = { key: "ключ", reserve: "запасной Telegram", password: "пароль", admin: "вручную" };
+      const statusText = { pending: "ждёт", done: "выполнен", cancelled: "отменён", failed: "не выполнен" };
+      return h("div", { class: "grid2" },
+        h("div", { class: "panel" }, h("h2", {}, "Защита аккаунта"), h("div", { class: "kv" },
+          h("div", {}, h("span", {}, "Ключ восстановления"), h("span", {}, sec.has_key ? "есть, " + date(sec.key_at) : "нет")),
+          h("div", {}, h("span", {}, "Запасной Telegram"), h("span", {}, sec.reserve_id ? `${sec.reserve_name || ""} ${sec.reserve_id}` : "нет")),
+          h("div", {}, h("span", {}, "Логин на сайте"), h("span", {}, sec.login || "нет"))),
+          (r.transfers || []).length ? h("div", { class: "list", style: "margin-top:12px" }, r.transfers.map((t) => h("div", { class: "row", style: "cursor:default" },
+            h("span", { class: "grow" }, h("span", { class: "title" }, `${t.old_id} → ${t.new_id}`), h("span", { class: "meta" }, `${methods[t.method] || t.method} · ${dateTime(t.created_at)}${t.note ? " · " + t.note : ""}`)),
+            h("span", { class: "badge " + ({ pending: "warn", done: "ok", cancelled: "idle", failed: "bad" }[t.status] || "idle") }, statusText[t.status] || t.status)))) : null,
+          sec.transfer ? h("button", { class: "btn small", style: "margin-top:12px", onclick: async (e) => {
+            if (await act(e.currentTarget, () => api("POST", `/api/admin/users/${id}`, { action: "cancel_transfer" }), "Перенос отменён")) route();
+          } }, "Отменить ожидающий перенос") : null),
+        h("div", { class: "panel", style: "display:grid;gap:10px;align-content:start" }, h("h2", { style: "margin:0" }, "Перенести на другой Telegram"),
+          h("p", { class: "hint" }, "Запасной вариант, если у человека нет ни ключа, ни запасного Telegram. Сначала убедитесь, что это владелец: например, по ID счетов CryptoBot или деталям его ботов. Перенос сразу, без 24 часов, и пишется в журнал."),
+          newId,
+          h("button", { class: "btn danger", onclick: async (e) => {
+            const v = parseInt(newId.value.trim(), 10);
+            if (!v) { toast("Укажите Telegram ID", true); return; }
+            if (!confirm(`Перенести аккаунт ${id} со всеми ботами и балансом на Telegram ${v}? Отменить нельзя.`)) return;
+            const res = await act(e.currentTarget, () => api("POST", `/api/admin/users/${id}`, { action: "transfer", new_id: v }));
+            if (res) { toast("Аккаунт перенесён"); location.hash = `#/admin/user/${v}`; }
+          } }, "Перенести")));
+    })(),
     h("div", { class: "panel flush" }, h("h2", { style: "padding:18px 18px 0" }, "Боты"),
       r.bots.length ? h("div", { class: "list" }, r.bots.map((b) => h("a", { class: "row", href: `#/bot/${b.id}` }, avatar(b), h("span", { class: "grow" }, h("span", { class: "title" }, `${b.title} ${b.bot_username ? "@" + b.bot_username : ""}`), h("span", { class: "meta" }, b.forever ? "навсегда" : "до " + date(b.expires_at))), badge(b))))
         : h("div", { class: "empty" }, "Ботов нет.")),
@@ -951,6 +1170,7 @@ async function route() {
   const parts = hash.slice(2).split("/");
   try {
     if (hash === "#/expired") { renderLogin(true); return; }
+    if (hash === "#/signup" && !S.me) { renderLogin(); return; }
     if (!S.me) await loadMe();
     const admin = S.me.is_owner;
     if (parts[0] === "") await pageHome();
@@ -960,6 +1180,7 @@ async function route() {
     else if (parts[0] === "bot") await pageBot(+parts[1]);
     else if (parts[0] === "wallet") await pageWallet();
     else if (parts[0] === "referrals") await pageReferrals();
+    else if (parts[0] === "security") await pageSecurity();
     else if (parts[0] === "admin" && admin) {
       const sub = parts[1] || "";
       await ({ "": pageAdmin, instances: pageAdminInstances, users: pageAdminUsers, user: () => pageAdminUser(+parts[2]), catalog: pageAdminCatalog, design: () => pageAdminDesign(parts[2]), promos: pageAdminPromos, payments: pageAdminPayments, settings: pageAdminSettings }[sub] || pageAdmin)();

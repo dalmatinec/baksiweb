@@ -236,6 +236,35 @@ def create_web(app: App) -> FastAPI:
         return {"user": user_view(user), "bots": [app.instances.view(b) for b in bots],
                 "security": await app.accounts.security(user["id"])}
 
+    @web.get("/api/me/avatar")
+    async def my_avatar(user=Depends(current_user)):
+        """Фото профиля Telegram (через хаб-бота), кэш на сутки. Нет фото или скрыто настройками - 404."""
+        folder = app.cfg.data_dir / "avatars"
+        path, none = folder / f"{user['id']}.jpg", folder / f"{user['id']}.none"
+        fresh = lambda p: p.exists() and time.time() - p.stat().st_mtime < 86400  # noqa: E731
+        headers = {"Cache-Control": "private, max-age=3600"}
+        if fresh(path):
+            return FileResponse(path, media_type="image/jpeg", headers=headers)
+        if fresh(none):
+            raise HTTPException(404, "Нет фото")
+        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            photos = await app.bot.get_user_profile_photos(user["id"], limit=1)
+            if not photos.total_count or not photos.photos:
+                none.touch()
+                raise HTTPException(404, "Нет фото")
+            sizes = sorted(photos.photos[0], key=lambda s: s.width)
+            size = next((s for s in sizes if s.width >= 160), sizes[-1])
+            file = await app.bot.get_file(size.file_id)
+            await app.bot.download_file(file.file_path, destination=path)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            log.info("Аватар %s не загружен: %s", user["id"], exc)
+            none.touch()
+            raise HTTPException(404, "Нет фото")
+        return FileResponse(path, media_type="image/jpeg", headers=headers)
+
     # --- безопасность аккаунта ----------------------------------------------------------
     @web.get("/api/security")
     async def security_info(user=Depends(current_user)):

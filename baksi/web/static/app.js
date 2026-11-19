@@ -248,6 +248,7 @@ function shell(content) {
     brand("side-brand"),
     h("nav", { "aria-label": "Кабинет" }, items.map(link), admin.length ? [h("div", { class: "group" }, "Администрирование"), admin.map(link)] : null),
     h("div", { class: "me" },
+      userAvatar(S.me.first_name || S.me.username, "me-ava"),
       h("b", {}, S.me.first_name || (S.me.username ? "@" + S.me.username : "Аккаунт")),
       h("span", {}, "ID " + S.me.id),
       TG ? null : h("button", { class: "btn small ghost", onclick: logout }, "Выйти")));
@@ -266,8 +267,16 @@ function shell(content) {
 // логотип: маскот и надпись Baksi Cloud
 function brand(cls) {
   return h("a", { class: "brand " + (cls || ""), href: "/", "aria-label": `${(S.cfg && S.cfg.brand) || "Baksi Cloud"}, на главную` },
-    h("img", { class: "brand-mascot", src: "/static/mascot-head.webp", alt: "", width: 48, height: 48 }),
+    h("img", { class: "brand-mascot", src: "/static/mascot-logo.webp", alt: "", width: 300, height: 197 }),
     h("span", { class: "wordmark", html: "Baksi <br>Cloud" }));
+}
+
+// фото профиля Telegram; если нет - первая буква имени
+function userAvatar(name, cls) {
+  const letter = h("span", { class: "acc-avatar " + (cls || "") }, (String(name || "?").replace("@", "")[0] || "?").toUpperCase());
+  const img = h("img", { class: "acc-photo " + (cls || ""), src: "/api/me/avatar", alt: "", width: 40, height: 40, loading: "lazy" });
+  img.addEventListener("error", () => img.replaceWith(letter));
+  return img;
 }
 
 function accountMenu() {
@@ -278,12 +287,12 @@ function accountMenu() {
     h("a", { href: "#/referrals", role: "menuitem" }, icon("gift"), "Рефералы"),
     TG ? null : h("button", { type: "button", role: "menuitem", class: "acc-out", onclick: logout }, "Выйти"));
   const btn = h("button", { type: "button", class: "acc-btn", "aria-haspopup": "menu", "aria-expanded": "false",
-    "aria-label": "Аккаунт", onclick: (e) => {
+    "aria-label": "Аккаунт: безопасность, рефералы, выход", onclick: (e) => {
       e.stopPropagation();
       const open = menu.hidden;
       menu.hidden = !open; btn.setAttribute("aria-expanded", String(open));
       if (open) setTimeout(() => document.addEventListener("click", () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); }, { once: true }), 0);
-    } }, h("span", { class: "acc-avatar" }, (name.replace("@", "")[0] || "?").toUpperCase()));
+    } }, userAvatar(name), h("span", { class: "acc-chev", "aria-hidden": "true", html: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>' }));
   return h("div", { class: "acc" }, btn, menu);
 }
 

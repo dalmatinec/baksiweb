@@ -1,5 +1,22 @@
 // Сайт: подставляет бренд, ссылку на хаб-бота и каталог с реальными ценами.
 (function () {
+  // Открыли из Telegram (кнопка бота, Mini App): сразу в кабинет, вход там автоматический
+  if (/tgWebAppData|tgWebAppVersion/.test(location.hash + location.search)) {
+    location.replace("/app" + location.search + location.hash);
+    return;
+  }
+  // Уже вошли: вместо «Войти» и «Регистрация» - одна кнопка в кабинет
+  fetch("/api/me", { credentials: "same-origin", headers: { "X-Baksi": "1" } }).then((r) => {
+    if (!r.ok) return;
+    const box = document.querySelector(".site-actions");
+    if (!box) return;
+    box.querySelectorAll("a[href^='/app']").forEach((a) => a.remove());
+    const go = document.createElement("a");
+    go.className = "btn primary small";
+    go.href = "/app";
+    go.textContent = "Мой кабинет";
+    box.prepend(go);
+  }).catch(() => {});
   const money = (c) => c == null ? "" : "$" + (c / 100).toFixed(2).replace(/\.00$/, "");
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 

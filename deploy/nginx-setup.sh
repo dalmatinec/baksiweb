@@ -23,6 +23,12 @@ else
   LINK=""
 fi
 
+if [ -f "${CONF}" ] && ! grep -qE "server_name\s+${HOST};" "${CONF}"; then
+  # домен сменился (например, с временного sslip.io на свой): старый конфиг сохраняем рядом и пишем новый
+  mv "${CONF}" "${CONF}.old-$(date +%Y%m%d%H%M%S)"
+  echo "== Домен сменился на ${HOST}: прежний конфиг сохранён рядом (.old-*)"
+fi
+
 if [ ! -f "${CONF}" ]; then
   cat > "${CONF}" <<'EOF'
 server {

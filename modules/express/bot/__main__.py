@@ -1,8 +1,8 @@
-"""Экспресс: заявки в группу продавцов.
+"""Экспресс: заявки в группу исполнителей.
 
 Заказчик пишет боту → бот пересылает сообщение форвардом в привязанную группу.
-Любой продавец отвечает реплаем на заявку → ответ уходит заказчику в личку (форвардом или анонимно).
-Заказчик может ответить реплаем на ответ продавца → сообщение уйдёт в группу.
+Любой исполнитель отвечает реплаем на заявку → ответ уходит заказчику в личку (форвардом или анонимно).
+Заказчик может ответить реплаем на ответ исполнителя → сообщение уйдёт в группу.
 """
 from __future__ import annotations
 
@@ -55,7 +55,7 @@ MIGRATIONS = [
         created_at  INTEGER NOT NULL,
         PRIMARY KEY (chat_id, message_id)
     );
-    CREATE TABLE dm_msgs (               -- ответы продавцов у заказчика -> сообщение продавца в группе
+    CREATE TABLE dm_msgs (               -- ответы исполнителей у заказчика -> сообщение исполнителя в группе
         user_id     INTEGER NOT NULL,
         message_id  INTEGER NOT NULL,
         ticket_id   INTEGER NOT NULL,
@@ -81,7 +81,7 @@ DEFAULTS = {
                 "голосовые. Заявку увидят все исполнители, ответы придут сюда.",
     "accepted": "✅ Заявка отправлена исполнителям. Ответы придут в этот чат.",
     "closed_user": "Заявка закрыта. Если нужно что-то ещё, просто напишите снова.",
-    "anonymous": False,      # ответы продавцов копией, без имени
+    "anonymous": False,      # ответы исполнителей копией, без имени
     "cooldown": 60,          # секунд между новыми заявками
     "auto_close_hours": 24,  # закрыть заявку без активности
     "close_by_anyone": False,
@@ -192,7 +192,7 @@ async def from_customer(message: Message, ex: Express) -> None:
     if not group:
         if ex.is_owner(user.id):
             code = kit.platform().get("bind_code", "")
-            await message.answer("Группа продавцов ещё не привязана. Добавьте бота в группу и отправьте туда "
+            await message.answer("Группа исполнителей ещё не привязана. Добавьте бота в группу и отправьте туда "
                                  f"<code>/bind {code}</code>")
         else:
             await message.answer("Бот ещё настраивается, попробуйте немного позже.")
@@ -206,7 +206,7 @@ async def from_customer(message: Message, ex: Express) -> None:
     if ex.flood(user.id):
         await message.answer("Слишком много сообщений подряд. Подождите минуту.")
         return
-    # ответ на сообщение конкретного продавца
+    # ответ на сообщение конкретного исполнителя
     target = None
     if message.reply_to_message:
         target = await ex.db.one("SELECT * FROM dm_msgs WHERE user_id = ? AND message_id = ?",
@@ -226,13 +226,13 @@ async def from_customer(message: Message, ex: Express) -> None:
         await message.answer("Не получилось отправить заявку. Попробуйте ещё раз чуть позже.")
         return
     except TelegramForbiddenError:
-        kit.notify("⚠️ Бот не может писать в группу продавцов: проверьте, что он в группе и ему можно писать.")
+        kit.notify("⚠️ Бот не может писать в группу исполнителей: проверьте, что он в группе и ему можно писать.")
         await message.answer("Не получилось отправить заявку. Попробуйте позже.")
         return
     await ex.db.run("INSERT OR REPLACE INTO group_msgs(chat_id, message_id, ticket_id, user_id, created_at) "
                     "VALUES (?, ?, ?, ?, ?)", group, fwd.message_id, ticket_id, user.id, now())
     if target:
-        # подсказать продавцу, что это ответ ему
+        # подсказать исполнителю, что это ответ ему
         try:
             hint = await ex.bot.send_message(group, "↩️ Ответ заказчика на это сообщение ⬆️",
                                              reply_to_message_id=target["group_msg"], allow_sending_without_reply=True,
@@ -256,7 +256,7 @@ async def from_customer(message: Message, ex: Express) -> None:
         await message.answer(ex.opt("accepted"))
 
 
-# --- продавцы в группе ----------------------------------------------------------
+# --- исполнители в группе ----------------------------------------------------------
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.reply_to_message)
 async def seller_reply(message: Message, ex: Express) -> None:
     if message.chat.id != kit.bound_chat_id() or not message.from_user or message.from_user.is_bot:
@@ -322,7 +322,7 @@ async def close_ticket(call: CallbackQuery, ex: Express) -> None:
     sellers = await ex.db.value("SELECT COUNT(DISTINCT seller_id) FROM replies WHERE ticket_id = ?", ticket_id,
                                 default=0)
     try:
-        await call.message.edit_text(f"✅ Заявка #{ticket_id} закрыта · ответили продавцов: {sellers}",
+        await call.message.edit_text(f"✅ Заявка #{ticket_id} закрыта · ответили исполнителей: {sellers}",
                                      reply_markup=kit.kb([[kit.btn("⛔️ Бан", f"ex:ban:{ticket['user_id']}")]]))
     except TelegramBadRequest:
         pass
@@ -359,13 +359,13 @@ async def admin_text(ex: Express) -> str:
                           "ORDER BY n DESC LIMIT 5", now() - 30 * 86400)
     group = kit.state().get("title") or "не привязана"
     lines = [f"⚙️ <b>Экспресс: админка</b>\n",
-             f"👥 Группа продавцов: <b>{esc(group)}</b>",
+             f"👥 Группа исполнителей: <b>{esc(group)}</b>",
              f"📨 Заявок: сегодня <b>{today}</b>, всего <b>{total}</b>",
              f"💬 С ответом за 30 дней: <b>{answered}</b> из {month}",
              f"🙋 Заказчиков: <b>{users}</b>",
-             f"🕶 Ответы продавцов: <b>{'анонимно' if ex.opt('anonymous') else 'форвардом'}</b>"]
+             f"🕶 Ответы исполнителей: <b>{'анонимно' if ex.opt('anonymous') else 'форвардом'}</b>"]
     if top:
-        lines.append("\n<b>Активные продавцы (30 дней)</b>")
+        lines.append("\n<b>Активные исполнители (30 дней)</b>")
         lines += [f"{i}. {esc(r['seller_name'])} - {r['n']}" for i, r in enumerate(top, 1)]
     if not kit.bound_chat_id():
         lines.append(f"\nПривязать группу: добавьте бота и отправьте <code>/bind "

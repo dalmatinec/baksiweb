@@ -1,10 +1,10 @@
 """Связь: бот-посредник для людей со спам-блоком.
 
-Человек пишет боту → выбирает отдел (операторы, разработчики, дизайнеры…) → переписывается с сотрудником
+Клиент пишет боту → выбирает отдел (например, «Продажи» или «Заказы») → переписывается с исполнителем
 прямо через бота. Два режима:
-- «личка»: сообщения приходят сотрудникам отдела в личку от бота, сотрудник жмёт «Ответить» и просто пишет;
-- «темы»: бот в группе с темами, на каждого клиента своя тема, отвечает любой сотрудник в теме.
-Сотрудники добавляются по ссылке-приглашению в отдел (без поиска ID).
+- «личка»: сообщения приходят исполнителям отдела в личку от бота, исполнитель жмёт «Ответить» и просто пишет;
+- «темы»: бот в группе с темами, на каждого клиента своя тема, отвечает любой исполнитель в теме.
+Исполнители добавляются по ссылке-приглашению в отдел (без поиска ID).
 """
 from __future__ import annotations
 
@@ -92,7 +92,7 @@ DEFAULTS = {
                 "Выберите, с кем хотите связаться:",
     "after_choose": "Напишите сообщение, мы ответим здесь же.",
     "closed": "Диалог закрыт. Если появятся вопросы, просто напишите снова.",
-    "show_names": True,      # показывать клиенту имя сотрудника
+    "show_names": True,      # показывать клиенту имя исполнителя
     "mode": "personal",      # personal | topics
 }
 
@@ -156,7 +156,7 @@ class Svyaz:
         name = esc(c["first_name"] or "Без имени")
         return f"{name}" + (f" @{esc(c['username'])}" if c["username"] else "") + f" · <code>{client_id}</code>"
 
-    # --- доставка сообщения клиента сотрудникам ---------------------------------
+    # --- доставка сообщения клиента исполнителям ---------------------------------
     async def deliver_from_client(self, dialog: Any, message: Message) -> bool:
         title = await self.dept_title(dialog["dept_id"])
         if self.opt("mode") == "topics" and kit.bound_chat_id():
@@ -181,7 +181,7 @@ class Svyaz:
                 await self.map(uid, copy.message_id, dialog["id"])
                 delivered = True
             except (TelegramForbiddenError, TelegramBadRequest) as exc:
-                log.info("Сотруднику %s не доставлено: %s", uid, exc)
+                log.info("Исполнителю %s не доставлено: %s", uid, exc)
         return delivered
 
     async def _to_topic(self, dialog: Any, message: Message, title: str) -> bool:
@@ -213,7 +213,7 @@ class Svyaz:
         await self.map(group, copy.message_id, dialog["id"])
         return True
 
-    # --- ответ сотрудника клиенту -----------------------------------------------
+    # --- ответ исполнителя клиенту -----------------------------------------------
     async def deliver_to_client(self, dialog: Any, message: Message, staff_id: int, staff_name: str) -> str | None:
         if dialog["status"] == "closed":
             return "Диалог закрыт. Клиент может написать снова, тогда откроется новый."
@@ -286,7 +286,7 @@ async def start(message: Message, command: CommandObject, sv: Svyaz, state: FSMC
         await sv.db.run("INSERT OR REPLACE INTO staff(user_id, dept_id, name, added_at) VALUES (?, ?, ?, ?)",
                         u.id, inv["dept_id"], u.full_name, now())
         title = await sv.dept_title(inv["dept_id"])
-        await message.answer(f"✅ Вы сотрудник отдела «{esc(title)}». Новые обращения будут приходить сюда.\n\n"
+        await message.answer(f"✅ Вы исполнитель в отделе «{esc(title)}». Новые обращения будут приходить сюда.\n\n"
                              "Как отвечать: нажмите «Ответить» под сообщением клиента и просто пишите. "
                              "/dialogs - открытые диалоги, /close - закрыть текущий.")
         for oid in kit.owner_ids():
@@ -301,7 +301,7 @@ async def start(message: Message, command: CommandObject, sv: Svyaz, state: FSMC
     depts = await sv.departments()
     text = sv.opt("greeting")
     if sv.is_owner(u.id):
-        text += "\n\n⚙️ Вы владелец: /admin - отделы, сотрудники, настройки."
+        text += "\n\n⚙️ Вы владелец: /admin - отделы, исполнители, настройки."
     if not depts:
         await message.answer(text + "\n\nБот ещё настраивается." if not sv.is_owner(u.id) else text)
         return
@@ -368,7 +368,7 @@ async def private_message(message: Message, sv: Svyaz) -> None:
         await message.answer("Сейчас не получается доставить сообщение. Попробуйте чуть позже.")
 
 
-# --- сотрудники -----------------------------------------------------------------
+# --- исполнители -----------------------------------------------------------------
 async def staff_message(message: Message, sv: Svyaz) -> None:
     uid = message.from_user.id
     dialog = None
@@ -417,7 +417,7 @@ async def activate(call: CallbackQuery, sv: Svyaz) -> None:
         await call.answer("Диалог уже закрыт", show_alert=True)
         return
     if d["staff_id"] and d["staff_id"] != uid:
-        who = await sv.db.value("SELECT name FROM staff WHERE user_id = ?", d["staff_id"], default="другой сотрудник")
+        who = await sv.db.value("SELECT name FROM staff WHERE user_id = ?", d["staff_id"], default="другой исполнитель")
         await call.answer(f"Диалог уже ведёт {who}. Можно попросить передать его вам.", show_alert=True)
         return
     if not d["staff_id"]:
@@ -550,14 +550,14 @@ async def admin_view(sv: Svyaz) -> tuple[str, Any]:
     lines = ["⚙️ <b>Связь: админка</b>\n",
              f"📨 Диалогов сегодня: <b>{today}</b>, открыто: <b>{open_}</b>",
              f"⏱ Средний первый ответ (7 дней): <b>{int(avg // 60)} мин</b>" if avg else "⏱ Ответов пока нет",
-             f"🧭 Режим: <b>{'темы в группе' if sv.opt('mode') == 'topics' else 'личка сотрудников'}</b>",
-             f"👤 Имена сотрудников клиенту: <b>{'показывать' if sv.opt('show_names') else 'скрывать'}</b>", "",
+             f"🧭 Режим: <b>{'темы в группе' if sv.opt('mode') == 'topics' else 'личка исполнителей'}</b>",
+             f"👤 Имена исполнителей клиенту: <b>{'показывать' if sv.opt('show_names') else 'скрывать'}</b>", "",
              "<b>Отделы</b>"]
     for d in depts:
         staff = await sv.dept_staff(d["id"])
-        lines.append(f"• {esc(d['title'])}: " + (", ".join(esc(s["name"]) for s in staff) or "нет сотрудников"))
+        lines.append(f"• {esc(d['title'])}: " + (", ".join(esc(s["name"]) for s in staff) or "нет исполнителей"))
     if not depts:
-        lines.append("Пока нет. Добавьте первый отдел, например «Оператор» или «Дизайнеры».")
+        lines.append("Пока нет. Добавьте первый отдел, например «Продажи» или «Заказы».")
     if sv.opt("mode") == "topics" and not kit.bound_chat_id():
         lines.append(f"\n⚠️ Для режима тем привяжите группу с темами: <code>/bind {kit.platform().get('bind_code', '')}</code>")
     rows = [[kit.btn(f"📁 {d['title']}", f"sva:dept:{d['id']}")] for d in depts]
@@ -600,7 +600,7 @@ async def new_dept(call: CallbackQuery, sv: Svyaz, state: FSMContext) -> None:
     if not sv.is_owner(call.from_user.id):
         return
     await state.set_state(Form.dept_title)
-    await call.message.answer("Название отдела (так его увидят клиенты), например: «Оператор RU»",
+    await call.message.answer("Название отдела (так его увидят клиенты), например: «Продажи» или «Заказы»",
                               reply_markup=kit.kb([[kit.btn("Отмена", "sva:home")]]))
     await call.answer()
 
@@ -630,8 +630,8 @@ async def dept_card(call: CallbackQuery, sv: Svyaz) -> None:
     token = secrets.token_urlsafe(9)
     await sv.db.run("INSERT INTO invites(token, dept_id, created_at) VALUES (?, ?, ?)", token, dept_id, now())
     link = f"https://t.me/{sv.username}?start=staff_{token}"
-    text = (f"📁 <b>{esc(title)}</b>\n\nСотрудники: " + (", ".join(esc(s["name"]) for s in staff) or "нет") +
-            f"\n\nСсылка-приглашение в отдел (отправьте сотруднику):\n<code>{link}</code>")
+    text = (f"📁 <b>{esc(title)}</b>\n\nИсполнители: " + (", ".join(esc(s["name"]) for s in staff) or "нет") +
+            f"\n\nСсылка-приглашение в отдел (отправьте исполнителю):\n<code>{link}</code>")
     rows = [[kit.btn("📋 Скопировать приглашение", copy=link)]]
     rows += [[kit.btn(f"✖️ Убрать {s['name']}", f"sva:rm:{dept_id}:{s['user_id']}")] for s in staff]
     rows.append([kit.btn("✏️ Переименовать", f"sva:ren:{dept_id}"), kit.btn("⬆️ Выше", f"sva:up:{dept_id}")])

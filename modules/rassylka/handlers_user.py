@@ -11,6 +11,14 @@ from database import get_database
 from send import send_mailing, forward_mailing
 from keyboards import confirmation_keyboard
 
+
+def baksi_kit_owner_ids() -> set[int]:
+    try:
+        import baksi_kit
+        return baksi_kit.owner_ids()
+    except ImportError:
+        return set()
+
 logger = logging.getLogger(__name__)
 router = Router()
 db = get_database()
@@ -47,6 +55,8 @@ async def cmd_start(message: Message):
                  "/new — ответом на пост: создать рассылку\n"
                  "/list — рассылки: группы, интервал, пауза\n"
                  "/groups — группы: проверка, удаление нерабочих")
+    if IN_PLATFORM and message.from_user.id in baksi_kit_owner_ids():
+        lines.append("\nВ личке бота: /captcha — капча для новых пользователей")
     await message.answer("\n".join(lines))
 
 

@@ -89,7 +89,12 @@ async def main() -> None:
     bot = Bot(config.bot_token, session=session,
               default=DefaultBotProperties(parse_mode="HTML", link_preview_is_disabled=True))
     app, dp, guard = await setup(config, bot)
+    captcha = None
     if baksi_kit:
+        from baksi_captcha import Captcha
+        # админы и те, кто уже пользовался ботом, проверку не проходят
+        captcha = await Captcha(back="a:prot", exempt=lambda uid: bool(app.perms(uid)) or uid in app.known_users,
+                                db_path=config.data_dir / "captcha.db").setup(dp)
         await baksi_kit.ready(bot)
     media = app.media
 
@@ -124,6 +129,8 @@ async def main() -> None:
         for t in tasks:
             t.cancel()
         await app.flush()
+        if captcha:
+            await captcha.close()
         await app.db.close()
         await bot.session.close()
 

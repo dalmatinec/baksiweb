@@ -23,6 +23,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import CallbackQuery, Message, ReactionTypeEmoji
 
 import baksi_kit as kit
+from baksi_captcha import Captcha, menu_button
 from baksi_db import ModuleDB
 
 log = logging.getLogger("express")
@@ -401,7 +402,8 @@ def admin_kb(ex: Express):
                  "exa:tog:close_by_anyone")],
         [kit.btn(f"⏱ Пауза между заявками: {ex.opt('cooldown')} с", "exa:num:cooldown"),
          kit.btn(f"🕓 Автозакрытие: {ex.opt('auto_close_hours')} ч", "exa:num:auto_close_hours")],
-        [kit.btn("⛔️ Заблокированные", "exa:bans"), kit.btn("🔄 Обновить", "exa:home")],
+        [kit.btn("⛔️ Заблокированные", "exa:bans"), menu_button()],
+        [kit.btn("🔄 Обновить", "exa:home")],
     ])
 
 
@@ -517,6 +519,10 @@ async def main() -> None:
     dp = Dispatcher(storage=MemoryStorage(), ex=ex)
     dp.include_router(kit.bind_router())
     dp.include_router(router)
+
+    async def known_customer(uid: int) -> bool:  # уже писавшие заказчики проверку не проходят
+        return bool(await db.one("SELECT 1 FROM tickets WHERE user_id = ? LIMIT 1", uid))
+    captcha = await Captcha(back="exa:home", exempt=known_customer).setup(dp)
     await bot.delete_webhook(drop_pending_updates=False)
     await kit.ready(bot)
     task = asyncio.create_task(cleanup(db))
@@ -524,6 +530,7 @@ async def main() -> None:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         task.cancel()
+        await captcha.close()
         await db.close()
         await bot.session.close()
 

@@ -129,6 +129,8 @@ async def view_setting_group(ctx: Ctx, group: str) -> ViewResult:
 async def view_protection(ctx: Ctx) -> ViewResult:
     s = ctx.app.store.setting
     rows: Rows = [[b(f"{title}: {s(key)}", f"x:setv:{key}:prot")] for key, (title, _, _) in PROTECTION.items()]
+    if IN_PLATFORM:  # капча для новых пользователей - общая для всех ботов Baksi Cloud
+        rows.append([b("🤖 Капча для новых пользователей", "kcap:menu")])
     rows.append(back_btn("a:cat:system"))
     html = ("🛡 <b>Защита</b>\n\n"
             f"Больше <b>{s('flood_limit')}</b> нажатий за <b>{s('flood_window')}</b> сек - бот просит не спешить. "

@@ -44,9 +44,14 @@ async def main():
 
     dp = Dispatcher()
 
+    captcha = None
     if IN_PLATFORM:
         import baksi_kit
+        from baksi_captcha import Captcha
+        from utils import is_admin
         dp.include_router(baksi_kit.bind_router())
+        # капча для тех, кто пишет боту в личку; админы её не проходят. Настройка: /captcha в личке бота
+        captcha = await Captcha(exempt=is_admin).setup(dp)
 
     dp.include_router(user_router)
     dp.include_router(group_router)
@@ -69,6 +74,8 @@ async def main():
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
     finally:
         scheduler_task.cancel()
+        if captcha:
+            await captcha.close()
         try:
             await scheduler_task
         except asyncio.CancelledError:

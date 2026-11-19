@@ -192,8 +192,10 @@ class SvyazTests(ModuleBase):
         self.assertEqual(self.session.to(41, "copy")[-1].source_id, 91)
         # оператор, добавленный посреди обращения, получает карточку клиента со следующим сообщением
         await self.add_operator(42, "Асель")
+        self.assertIn("Ждёт ответа: обращение #1", self.texts(42), "ожидающее пришло сразу при добавлении")
         await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Алло", mid=92))
-        self.assertIn("Новое обращение #1", self.texts(42))
+        self.assertEqual(self.texts(42).count("обращение #1"), 1, "без повторной карточки")
+        self.assertEqual(self.session.to(42, "copy")[-1].source_id, 92)
 
     async def test_reply_is_anonymous_and_mirrored(self):
         await self.add_operator(SELLER, "Данияр")
@@ -216,13 +218,9 @@ class SvyazTests(ModuleBase):
                                        reply_to=self.session.to(41, "copy")[0].message_id))
         self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 92)
         self.assertIn("Ерлан</b> ответил", self.texts(SELLER))
-        await self.feed(callback_update(41, user(41, "Ерлан"), "sv:hist:1"))
-        self.assertEqual([s.source_id for s in self.session.to(41, "copy")][-3:], [90, 91, 92])
-        self.assertIn("🎧 Данияр", self.texts(41))
-        self.assertIn("Последним отвечал(а): Ерлан", self.texts(41))
-        await self.feed(message_update(41, user(41), "/close", reply_to=self.session.to(41, "copy")[-3].message_id))
-        self.assertEqual(await self.db.value("SELECT status FROM dialogs WHERE id = 1"), "closed")
-        self.assertIn("закрыто", self.texts(SELLER))
+        # под карточкой клиента только «Бан»
+        card = [x for x in self.session.to(SELLER, "send") if "Новое обращение" in (x.text or "")][0]
+        self.assertEqual([b.callback_data for row in card.markup.inline_keyboard for b in row], ["sv:ban:1"])
 
     async def test_no_operators_reminds_owner_and_keeps_history(self):
         await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Есть кто?", mid=90))
@@ -234,10 +232,9 @@ class SvyazTests(ModuleBase):
         await self.feed(message_update(OWNER, user(OWNER), "/admin"))
         self.assertIn("Обращения никто не видит", self.texts(OWNER))
         await self.add_operator(SELLER, "Данияр")
-        self.assertIn("ждут ответа: 1", self.texts(SELLER))
-        await self.feed(callback_update(SELLER, user(SELLER), "sv:hist:1"))
+        # новому оператору сразу приходят ожидающие обращения с сообщениями клиента
+        self.assertIn("Ждёт ответа: обращение #1", self.texts(SELLER))
         self.assertEqual([s.source_id for s in self.session.to(SELLER, "copy")][-2:], [90, 91])
-        # реплай на сообщение из истории доходит клиенту
         hist_copy = self.session.to(SELLER, "copy")[-2].message_id
         await self.feed(message_update(SELLER, user(SELLER, "Данияр"), "Мы тут", mid=92, reply_to=hist_copy))
         self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 92)
@@ -297,9 +294,79 @@ class SvyazTests(ModuleBase):
         self.assertNotIn(CLIENT, self.session.commands, "клиенту личное меню не ставим, у него только /start")
         self.assertNotIn("Вы владелец", self.session.to(CLIENT, "send")[-1].text)
         await self.add_operator(SELLER, "Данияр")
-        self.assertEqual(self.session.commands[SELLER], ["start", "dialogs", "close"])
+        self.assertEqual(self.session.commands[SELLER], ["start", "ban", "unban"])
         await self.feed(callback_update(OWNER, user(OWNER), f"sva:oprm:{SELLER}"))
         self.assertEqual(self.session.commands[SELLER], ["start"])
+
+    async def test_ban_by_reply_and_unban_by_id(self):
+        await self.add_operator(SELLER, "Данияр")
+        await self.feed(message_update(CLIENT, user(CLIENT), "Спам", mid=90))
+        await self.feed(message_update(SELLER, user(SELLER), "/ban"))
+        self.assertIn("реплаем", self.texts(SELLER))
+        self.assertEqual(await self.db.value("SELECT banned FROM clients WHERE id = ?", CLIENT), 0)
+        await self.feed(message_update(SELLER, user(SELLER), "/ban", reply_to=self.session.to(SELLER, "copy")[-1].message_id))
+        self.assertEqual(await self.db.value("SELECT banned FROM clients WHERE id = ?", CLIENT), 1)
+        self.assertIn(f"/unban {CLIENT}", self.texts(SELLER))
+        await self.feed(message_update(CLIENT, user(CLIENT), "Ещё спам", mid=91))
+        self.assertNotIn(91, [x.source_id for x in self.session.to(SELLER, "copy")], "забаненный не доходит")
+        # клиент не может банить и разбанивать
+        await self.feed(message_update(55, user(55), f"/unban {CLIENT}"))
+        self.assertEqual(await self.db.value("SELECT banned FROM clients WHERE id = ?", CLIENT), 1)
+        await self.feed(message_update(SELLER, user(SELLER), "/unban"))
+        self.assertIn("ID клиента", self.texts(SELLER))
+        await self.feed(message_update(SELLER, user(SELLER), f"/unban {CLIENT}"))
+        self.assertEqual(await self.db.value("SELECT banned FROM clients WHERE id = ?", CLIENT), 0)
+        await self.feed(message_update(CLIENT, user(CLIENT), "Я исправился", mid=92))
+        self.assertEqual(self.session.to(SELLER, "copy")[-1].source_id, 92)
+
+    async def test_new_dialog_after_silence_and_late_reply(self):
+        await self.add_operator(SELLER, "Данияр")
+        await self.feed(message_update(CLIENT, user(CLIENT), "Привет", mid=90))
+        old_copy = self.session.to(SELLER, "copy")[-1].message_id
+        await self.db.run("UPDATE dialogs SET last_at = last_at - ?", self.mod.NEW_DIALOG_AFTER + 60)
+        await self.feed(message_update(CLIENT, user(CLIENT), "Я снова", mid=91))
+        self.assertEqual(await self.db.value("SELECT COUNT(*) FROM dialogs"), 2)
+        self.assertIn("Новое обращение #2", self.texts(SELLER))
+        self.assertEqual(sum("получено" in (x.text or "") for x in self.session.to(CLIENT, "send")), 2)
+        # ответ на старое сообщение всё равно доходит
+        await self.feed(message_update(SELLER, user(SELLER, "Данияр"), "Ответ", mid=92, reply_to=old_copy))
+        self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 92)
+
+    async def test_captcha_in_svyaz(self):
+        from baksi_captcha import Captcha
+        await self.add_operator(SELLER, "Данияр")
+        await self.feed(message_update(CLIENT, user(CLIENT), "Старый клиент", mid=80))
+
+        async def known(uid):
+            return await self.sv.is_operator(uid) or bool(await self.db.one(
+                "SELECT 1 FROM history h JOIN dialogs d ON d.id = h.dialog_id WHERE d.client_id = ? LIMIT 1", uid))
+        captcha = await Captcha(back="sva:home", exempt=known).setup(self.dp)
+        try:
+            await self.feed(callback_update(OWNER, user(OWNER), "sva:home"))
+            self.assertIn("kcap:menu", [b.callback_data for row in self.session.sent[-1].markup.inline_keyboard
+                                        for b in row])
+            await self.feed(callback_update(OWNER, user(OWNER), "kcap:m:emoji"))
+            self.assertEqual(captcha.mode, "emoji")
+            # уже писавший клиент и оператор - без проверки
+            await self.feed(message_update(CLIENT, user(CLIENT), "Снова я", mid=81))
+            self.assertEqual(self.session.to(SELLER, "copy")[-1].source_id, 81)
+            # новый клиент: сначала капча, потом сообщение доходит
+            await self.feed(message_update(55, user(55, "Новый"), "Здравствуйте", mid=82))
+            self.assertNotIn(82, [x.source_id for x in self.session.to(SELLER, "copy")])
+            self.assertIn("Нажмите на", self.session.to(55, "send")[-1].text)
+            p = captcha.pending[55]
+            await self.feed(callback_update(55, user(55), f"kcap:a:{p['token']}:{p['answer']}", message_id=p["msg"]))
+            self.assertEqual(self.session.to(SELLER, "copy")[-1].source_id, 82)
+            # новый оператор по приглашению: приглашение срабатывает после капчи
+            await self.feed(callback_update(OWNER, user(OWNER), "sva:ops"))
+            token = await self.db.value("SELECT token FROM invites ORDER BY rowid DESC LIMIT 1")
+            await self.feed(message_update(66, user(66, "Асель"), f"/start op_{token}"))
+            self.assertFalse(await self.sv.is_operator(66))
+            p = captcha.pending[66]
+            await self.feed(callback_update(66, user(66), f"kcap:a:{p['token']}:{p['answer']}", message_id=p["msg"]))
+            self.assertTrue(await self.sv.is_operator(66))
+        finally:
+            await captcha.close()
 
     async def test_texts_menu_edit_and_reset(self):
         await self.feed(callback_update(OWNER, user(OWNER), "sva:texts"))
@@ -342,8 +409,10 @@ class SvyazTests(ModuleBase):
                                        reply_to=self.session.to(SELLER, "copy")[0].message_id))
         self.assertIn("Данияр</b> ответил", self.texts(GROUP))
         self.assertEqual(self.session.to(GROUP, "copy")[-1].source_id, 96)
-        await self.feed(callback_update(GROUP, user(77), "sv:close:1"))
-        self.assertEqual(await self.db.value("SELECT status FROM dialogs WHERE id = 1"), "closed")
+        # бан из группы реплаем
+        await self.feed(message_update(GROUP, user(77, "Участник"), "/ban", reply_to=copy.message_id))
+        self.assertEqual(await self.db.value("SELECT banned FROM clients WHERE id = ?", CLIENT), 1)
+        self.assertIn(f"/unban {CLIENT}", self.texts(GROUP))
 
     async def test_group_only_without_operators(self):
         await self.bind()

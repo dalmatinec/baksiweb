@@ -53,6 +53,9 @@ bash deploy/restore.sh data/backups/baksi-YYYYMMDD-HHMMSS.zip   # восстан
 1. Направьте A-запись домена на сервер.
 2. В `.env` задайте `DOMAIN=example.com` и `PUBLIC_URL=https://example.com`, затем
    `docker compose --profile https up -d`. Caddy сам получит сертификат.
+   Если на сервере уже стоит nginx (порты 80/443 заняты), Caddy не нужен: задайте только `PUBLIC_URL` и выполните
+   `bash deploy/nginx-setup.sh`. Скрипт добавит отдельный сайт в nginx и выпустит сертификат certbot'ом, остальные
+   сайты не затрагиваются.
 3. Кнопка «Открыть» в хаб-боте (Mini App) настраивается автоматически при запуске.
 4. Вход на сайте через Telegram-виджет (по желанию): @BotFather → /setdomain → ваш домен, затем включите
    «Вход через Telegram-виджет» в настройках админки.

@@ -54,7 +54,11 @@ if grep -q "^DOMAIN=." .env && command -v ufw >/dev/null 2>&1 && ufw status | gr
   ufw allow 80/tcp >/dev/null && ufw allow 443/tcp >/dev/null && echo "Открыл порты 80 и 443 в ufw"
 fi
 
-if grep -q "^DOMAIN=." .env; then
+if grep -q "^DOMAIN=." .env && ss -ltnp 2>/dev/null | grep -qE ':(80|443)\s.*nginx'; then
+  echo "== Порты 80/443 заняты nginx: сайт подключу через него, а не через Caddy"
+  docker compose up -d --build
+  bash deploy/nginx-setup.sh
+elif grep -q "^DOMAIN=." .env; then
   docker compose --profile https up -d --build
 else
   docker compose up -d --build

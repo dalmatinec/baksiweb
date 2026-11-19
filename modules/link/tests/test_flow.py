@@ -395,6 +395,20 @@ class Admin(Base):
         await h.send(USER, "/start")
         self.assertIn("Йо, U42! Твой id 42", h.user_screen(USER).text)
 
+    async def test_input_answer_is_new_message_with_confirmation(self):
+        """После ввода текста подтверждение приходит новым сообщением внизу, старый экран удаляется."""
+        h = self.h
+        prompt = await h.admin("x:htm:text:start")
+        prompt_id = h.screen_id(OWNER)
+        await h.send(OWNER, "Новое приветствие")
+        screen = h.screen(OWNER)
+        self.assertNotEqual(h.screen_id(OWNER), prompt_id, "ответ - новое сообщение, а не правка старого")
+        self.assertTrue(screen.text.startswith("<b>✅ Сохранено</b>"), screen.text[:60])
+        self.assertNotIn((OWNER, prompt_id), h.tg.messages, "старый экран удалён, в чате нет дублей")
+        await h.admin("x:htm:text:start")
+        await h.send(OWNER, "")
+        self.assertIn("Не сохранено", h.screen(OWNER).text)
+
     async def test_admin_permissions(self):
         h, app = self.h, self.app
         await h.admin("x:adnew2")

@@ -130,7 +130,8 @@ admin_screens: dict[int, int] = {}
 async def render(ctx: Ctx, result: ViewResult, message_id: int | None) -> None:
     html, rows = result
     if ctx.notice:
-        html = f"{ctx.notice}\n\n{html}"
+        first, _, rest = ctx.notice.partition("\n")
+        html = f"<b>{first}</b>" + (f"\n{rest}" if rest else "") + f"\n\n{html}"
     if len(html) > TEXT_LIMIT:  # резать HTML посередине тега нельзя - показываем простым текстом
         html = escape(html_to_plain(html))[:TEXT_LIMIT - 1] + "..."
     kb = markup(rows)
@@ -230,24 +231,28 @@ async def on_admin_input(message: Message, state: FSMContext, app: App, perms: s
         return
     if not data.get("keep"):
         await safe_delete(app, message.chat.id, message.message_id)
+    try:  # сразу показать, что сообщение принято и обрабатывается (картинка может грузиться пару секунд)
+        await app.bot.send_chat_action(message.chat.id, "upload_photo" if has_media(message) else "typing")
+    except Exception:
+        pass
+    # Ответ на ввод всегда приходит НОВЫМ сообщением внизу чата (старый экран удаляется): правка старого
+    # сообщения где-то выше незаметна, и непонятно, принялось или нет.
     try:
         next_cb = await entry[1](ctx, message, *data.get("args", []))
     except (InputError, MediaError) as e:
-        html = f"⚠️ {escape(str(e))}\n\nПопробуйте ещё раз или нажмите ✖️ Отмена."
-        await render(ctx, (html, [[button("✖️ Отмена", cb=data.get("back", "a:home"))]]), screen_id)
+        html = f"⚠️ <b>Не сохранено.</b> {escape(str(e))}\n\nПопробуйте ещё раз или нажмите ✖️ Отмена."
+        await render(ctx, (html, [[button("✖️ Отмена", cb=data.get("back", "a:home"))]]), None)
         return
     except Exception as e:
         log.exception("Ошибка ввода в админке (%s)", data.get("input"))
         await state.set_state(None)
-        await render(ctx, (f"⚠️ Ошибка: {escape(str(e))[:300]}",
-                           [[button("◀️ Назад", cb=data.get("back", "a:home"))]]), screen_id)
+        await render(ctx, (f"⚠️ <b>Не сохранено.</b> Ошибка: {escape(str(e))[:300]}",
+                           [[button("◀️ Назад", cb=data.get("back", "a:home"))]]), None)
         return
     if await state.get_state() == AdminInput.wait.state and (await state.get_data()).get("input") == data.get("input"):
         await state.set_state(None)
     result = await open_view(ctx, next_cb) if isinstance(next_cb, str) else next_cb
-    if data.get("keep"):
-        screen_id = None  # сообщение админа осталось в чате - экран присылаем ниже
-    await render(ctx, result, screen_id)
+    await render(ctx, result, None)
 
 
 # ---------- общие элементы экранов ----------

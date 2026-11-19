@@ -535,11 +535,8 @@ async def wallet(call: CallbackQuery, app: App, state: FSMContext) -> None:
 
 def pay_methods(app: App) -> list[tuple[str, str]]:
     """Способы пополнения, которые сейчас включены: USDT напрямую (TON, TRC20) и CryptoBot."""
-    methods = []
-    if app.usdt and "ton" in app.usdt.nets:
-        methods.append(("usdt_ton", "💎 USDT · сеть TON"))
-    if app.usdt and "trc20" in app.usdt.nets:
-        methods.append(("usdt_trc20", "🔺 USDT · TRC20"))
+    labels = {"usdt_ton": "💎 USDT · сеть TON", "usdt_trc20": "🔺 USDT · TRC20", "ton": "💠 TON", "btc": "₿ Bitcoin"}
+    methods = [(m, labels[m]) for m in (app.usdt.methods if app.usdt else [])]
     if app.pay.enabled:
         methods.append(("cryptobot", "🤖 @CryptoBot: USDT, TON, BTC и др."))
     return methods
@@ -560,7 +557,7 @@ async def choose_method(target: Message | CallbackQuery, app: App, state: FSMCon
         return
     await state.update_data(pay_intent=intent, pay_cents=cents, pay_back=back)
     await render(target, f"Пополнение на <b>{money(cents)}</b>. Чем оплатить?\n\n"
-                         "USDT напрямую - без посредников, комиссия только сети. В сети TON она копеечная.",
+                         "Напрямую на кошелёк, без посредников: комиссия только сети. TON и BTC - по текущему курсу.",
                  kb(*[[b(label, f"tpv:{key}:{cents}", style="primary" if i == 0 else None)]
                       for i, (key, label) in enumerate(methods)], [b("⬅️ Назад", back)]))
 
@@ -578,8 +575,8 @@ async def create_invoice(target: Message | CallbackQuery, app: App, method: str,
                          intent: dict | None = None, back: str = "wallet") -> None:
     from ..usdtpay import UsdtError
     try:
-        if method.startswith("usdt_"):
-            inv = await app.usdt.create(target.from_user.id, cents, method.removeprefix("usdt_"), intent)
+        if app.usdt and method in app.usdt.methods:
+            inv = await app.usdt.create(target.from_user.id, cents, method, intent)
         else:
             inv = await app.pay.create(target.from_user.id, cents, intent)
     except (PaymentError, UsdtError) as exc:
@@ -588,9 +585,9 @@ async def create_invoice(target: Message | CallbackQuery, app: App, method: str,
         else:
             await target.answer(f"❌ {esc(exc)}")
         return
-    if method.startswith("usdt_"):
+    if app.usdt and method in app.usdt.methods:
         await render(target, app.usdt.instructions(inv), kb(
-            [b("📋 Адрес", copy=inv["address"]), b(f"📋 Сумма {inv['usdt']}", copy=inv["usdt"])],
+            [b("📋 Адрес", copy=inv["address"]), b(f"📋 Сумма {inv['crypto']}", copy=inv["crypto"])],
             [b("📋 Комментарий", copy=inv["comment"])] if inv["comment"] else None,
             [b("🔄 Я оплатил, проверить", f"uchk:{inv['id']}", style="success")],
             [b("⬅️ Кошелёк", "wallet")]))
@@ -621,8 +618,8 @@ async def usdt_check(call: CallbackQuery, app: App) -> None:
     elif row["status"] == "expired":
         await call.answer("Срок счёта истёк. Создайте новый, а если уже перевели - напишите в поддержку.", show_alert=True)
     else:
-        await call.answer("Пока не вижу перевода. TRC20 подтверждается 1–3 минуты, TON - быстрее. Я проверяю сам "
-                          "каждые полминуты и пришлю уведомление.", show_alert=True)
+        await call.answer("Пока не вижу перевода. TON - секунды, TRC20 - 1–3 минуты, Bitcoin - 10–30 минут (нужно "
+                          "подтверждение сети). Я проверяю сам каждые полминуты и пришлю уведомление.", show_alert=True)
 
 
 @router.callback_query(F.data.startswith("top:"))

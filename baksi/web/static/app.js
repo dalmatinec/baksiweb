@@ -656,9 +656,9 @@ async function pageProduct(slug, instanceId) {
 // ---------- оплата: выбор способа и счёт USDT ----------
 function payMethods() {
   const p = S.cfg.payments || {};
-  const m = [];
-  if ((p.usdt || []).includes("ton")) m.push(["usdt_ton", "USDT · сеть TON", "Комиссия сети - копейки"]);
-  if ((p.usdt || []).includes("trc20")) m.push(["usdt_trc20", "USDT · TRC20", "Сеть TRON"]);
+  const info = { usdt_ton: ["USDT · сеть TON", "Комиссия сети - копейки"], usdt_trc20: ["USDT · TRC20", "Сеть TRON"],
+    ton: ["TON", "По текущему курсу"], btc: ["Bitcoin", "По курсу, после 1 подтверждения сети"] };
+  const m = (p.direct || []).filter((k) => info[k]).map((k) => [k, ...info[k]]);
   if (p.cryptobot) m.push(["cryptobot", "@CryptoBot", "USDT, TON, BTC и другие монеты"]);
   return m;
 }
@@ -685,9 +685,9 @@ function payFlow(amount, intent, onPaid) {
     usdtInvoice(s, inv, onPaid);
   };
   const s = sheet(`Пополнение на ${money(amount)}`,
-    h("p", { class: "muted" }, "Чем оплатить? USDT напрямую - без посредников, комиссия только сети."),
+    h("p", { class: "muted" }, "Чем оплатить? Напрямую на кошелёк, без посредников: комиссия только сети."),
     h("div", { class: "pay-methods" }, methods.map(([key, title, hint]) => h("button", { class: "pay-method", type: "button", onclick: (e) => start(e.currentTarget, key) },
-      h("span", { class: "pm-ico pm-" + key, "aria-hidden": "true" }, key === "usdt_ton" ? "💎" : key === "usdt_trc20" ? "🔺" : "🤖"),
+      h("span", { class: "pm-ico pm-" + key, "aria-hidden": "true" }, { usdt_ton: "💎", usdt_trc20: "🔺", ton: "💠", btc: "₿" }[key] || "🤖"),
       h("span", {}, h("b", {}, title), h("span", { class: "hint" }, hint)), icon("chevron")))));
   if (methods.length === 1) start(null, methods[0][0]);
 }
@@ -698,16 +698,17 @@ function usdtInvoice(s, inv, onPaid) {
     h("code", {}, value), h("button", { class: "btn small", type: "button", onclick: () => copy(copyText || value) }, "Копировать"));
   s.box.querySelector("h2").textContent = `Счёт #${inv.id} на ${money(inv.amount)}`;
   s.body.replaceChildren(
-    h("div", { class: "pay-amount" }, h("span", { class: "k" }, "Переведите ровно"), h("b", {}, inv.usdt, h("small", {}, " USDT")),
-      h("span", { class: "pay-net" }, inv.net === "ton" ? "Сеть TON" : "Сеть TRON (TRC20)")),
-    row("Сумма", inv.usdt),
+    h("div", { class: "pay-amount" }, h("span", { class: "k" }, "Переведите ровно"), h("b", {}, inv.crypto, h("small", {}, " " + inv.ticker)),
+      h("span", { class: "pay-net" }, "Сеть " + inv.net_title),
+      inv.rate ? h("span", { class: "hint" }, `Курс 1 ${inv.ticker} = $${Number(inv.rate).toLocaleString("ru-RU", { maximumFractionDigits: 2 })}, сумма держится 2 часа`) : null),
+    row("Сумма", inv.crypto),
     row("Адрес", inv.address),
     inv.comment ? row("Комментарий", inv.comment) : null,
-    h("div", { class: "alert warn" }, "Только USDT и только в этой сети, иначе деньги потеряются. Сумма должна совпасть до последней цифры: по ней мы узнаём ваш платёж. С биржи учитывайте её комиссию."),
+    h("div", { class: "alert warn" }, `Только ${inv.ticker} и только в этой сети, иначе деньги потеряются. Сумма должна совпасть до последней цифры: по ней мы узнаём ваш платёж. С биржи учитывайте её комиссию.` + (inv.ticker === "BTC" ? " Bitcoin засчитывается после 1 подтверждения сети, обычно 10–30 минут." : "")),
     status,
     h("button", { class: "btn primary wide", type: "button", onclick: async (e) => {
       const r = await act(e.currentTarget, () => api("POST", `/api/invoices/${inv.id}/check`));
-      if (r && r.status === "active") toast("Пока не вижу перевода. TRC20 подтверждается 1–3 минуты");
+      if (r && r.status === "active") toast(inv.ticker === "BTC" ? "Пока не вижу. Bitcoin нужно 1 подтверждение, 10–30 минут" : "Пока не вижу перевода. TRC20 подтверждается 1–3 минуты");
       if (r) done(r.status);
     } }, "Я оплатил, проверить"),
     h("p", { class: "hint", style: "text-align:center" }, `Счёт действует до ${dateTime(inv.expires_at)}. Можно закрыть окно: зачисление придёт само.`));
@@ -864,7 +865,7 @@ async function pageWallet() {
         canPay() ? [
           h("div", { class: "actions" }, [500, 1000, 2500, 5000, 10000].map((c) => h("button", { class: "btn", onclick: (e) => topup(e.currentTarget, c) }, money(c).replace(".00", "")))),
           h("div", { style: "display:flex;gap:8px" }, custom, h("button", { class: "btn primary", onclick: (e) => topup(e.currentTarget, toCents(custom.value)) }, "Пополнить")),
-          h("p", { class: "hint" }, "USDT напрямую в сетях TON и TRC20" + (S.cfg.payments.cryptobot ? " или через @CryptoBot" : "") + ". Зачисление автоматически."),
+          h("p", { class: "hint" }, "Напрямую на кошелёк: USDT (TON, TRC20)" + ((S.cfg.payments.direct || []).includes("ton") ? ", TON" : "") + ((S.cfg.payments.direct || []).includes("btc") ? ", Bitcoin" : "") + (S.cfg.payments.cryptobot ? " или через @CryptoBot" : "") + ". Зачисление автоматически."),
         ] : h("p", { class: "muted" }, "Пополнение пока недоступно, напишите в поддержку.")),
       h("div", { class: "panel", style: "display:grid;gap:14px" }, h("h2", { style: "margin:0" }, "Промокод на баланс"),
         h("div", { style: "display:flex;gap:8px" }, promoInput, h("button", { class: "btn", onclick: async (e) => {

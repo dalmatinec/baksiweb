@@ -5,30 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Baksi Cloud: свои Telegram-боты по подписке</title>
 <meta name="description" content="Генератор ссылок, рассылка по группам, заявки в группу исполнителей, бот связи для спам-блока. Свой бот на своём токене за пару минут.">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#1b1d20">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Onest:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/style.css">
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="icon" href="/static/favicon.png" type="image/png">
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
 </head>
 <body>
 <header class="site-head">
-  <a class="logo" href="/"><span class="logo-mark" aria-hidden="true">B</span><span data-brand>Baksi Cloud</span></a>
+  <a class="brand" href="/" aria-label="Baksi Cloud, на главную">
+    <img class="brand-mascot" src="/static/mascot-head.webp" alt="" width="48" height="48">
+    <span class="wordmark">Baksi <br>Cloud</span>
+  </a>
   <nav class="site-nav" aria-label="Разделы">
     <a href="#bots">Боты</a>
     <a href="#how">Как подключить</a>
     <a href="#reliable">Надёжность</a>
   </nav>
   <div class="site-actions">
-    <a class="btn ghost small" href="/app">Войти</a>
-    <a class="btn small" href="/app#/signup">Регистрация</a>
-    <a class="btn primary small" data-hub href="#">Открыть в Telegram</a>
+    <a class="btn small" href="/app">Войти</a>
+    <a class="btn primary small" href="/app#/signup">Регистрация</a>
+    <a class="btn small wide-only" data-hub href="#">Открыть в Telegram</a>
   </div>
 </header>
 
 <main>
   <section class="hero">
+    <img class="hero-mascot" src="/static/mascot.webp" alt="Маскот Baksi Cloud: кот в худи с ноутбуком и облаком" width="900" height="590">
     <h1>Свой Telegram-бот за пару минут</h1>
     <p class="lead">Выберите готового бота, оплатите срок и вставьте токен из @BotFather. Запуск, перезапуски, бэкапы и продление мы берём на себя.</p>
     <div class="cta">

@@ -245,7 +245,7 @@ function shell(content) {
   const { items, admin } = navItems();
   const link = ([href, label, ic]) => h("a", { href, class: isActive(href) ? "on" : null }, icon(ic), label);
   const side = h("aside", { class: "side" },
-    h("a", { class: "logo", href: "/" }, h("span", { class: "logo-mark", "aria-hidden": "true" }, "B"), S.cfg.brand),
+    brand("side-brand"),
     h("nav", { "aria-label": "Кабинет" }, items.map(link), admin.length ? [h("div", { class: "group" }, "Администрирование"), admin.map(link)] : null),
     h("div", { class: "me" },
       h("b", {}, S.me.first_name || (S.me.username ? "@" + S.me.username : "Аккаунт")),
@@ -258,8 +258,33 @@ function shell(content) {
     ? h("nav", { class: "admin-subnav", "aria-label": "Разделы админки" }, admin.map(([href, label]) => h("a", { href, class: isActive(href) ? "btn small primary" : "btn small" }, label)))
     : null;
   const notice = S.cfg.notice ? h("div", { class: "alert warn", role: "status" }, S.cfg.notice) : null;
-  $root().replaceChildren(h("div", { class: "shell" }, side, h("main", { class: "main" }, h("div", { class: "wrap" }, subnav, notice, content)), tabs));
+  const mtop = h("header", { class: "mtop" }, brand("mtop-brand"), accountMenu());
+  $root().replaceChildren(h("div", { class: "shell" }, side, h("main", { class: "main" }, h("div", { class: "wrap" }, mtop, subnav, notice, content)), tabs));
   window.scrollTo(0, 0);
+}
+
+// логотип: маскот и надпись Baksi Cloud
+function brand(cls) {
+  return h("a", { class: "brand " + (cls || ""), href: "/", "aria-label": `${(S.cfg && S.cfg.brand) || "Baksi Cloud"}, на главную` },
+    h("img", { class: "brand-mascot", src: "/static/mascot-head.webp", alt: "", width: 48, height: 48 }),
+    h("span", { class: "wordmark", html: "Baksi <br>Cloud" }));
+}
+
+function accountMenu() {
+  const name = S.me.first_name || (S.me.username ? "@" + S.me.username : "Аккаунт");
+  const menu = h("div", { class: "acc-menu", role: "menu", hidden: true },
+    h("div", { class: "acc-who" }, h("b", {}, name), h("span", {}, "ID " + S.me.id)),
+    h("a", { href: "#/security", role: "menuitem" }, icon("shield"), "Безопасность"),
+    h("a", { href: "#/referrals", role: "menuitem" }, icon("gift"), "Рефералы"),
+    TG ? null : h("button", { type: "button", role: "menuitem", class: "acc-out", onclick: logout }, "Выйти"));
+  const btn = h("button", { type: "button", class: "acc-btn", "aria-haspopup": "menu", "aria-expanded": "false",
+    "aria-label": "Аккаунт", onclick: (e) => {
+      e.stopPropagation();
+      const open = menu.hidden;
+      menu.hidden = !open; btn.setAttribute("aria-expanded", String(open));
+      if (open) setTimeout(() => document.addEventListener("click", () => { menu.hidden = true; btn.setAttribute("aria-expanded", "false"); }, { once: true }), 0);
+    } }, h("span", { class: "acc-avatar" }, (name.replace("@", "")[0] || "?").toUpperCase()));
+  return h("div", { class: "acc" }, btn, menu);
 }
 
 const head = (title, ...right) => h("div", { class: "page-head" }, h("h1", {}, title), right.length ? h("div", { class: "actions" }, right) : null);
@@ -326,7 +351,7 @@ function renderLogin(expired) {
         " → «🔐 Безопасность» → «Пароль для сайта» и задайте новый."),
       h("p", {}, "Потеряли Telegram: с нового аккаунта отправьте боту /recover и введите ключ восстановления, или сделайте это с запасного Telegram. Аккаунт перейдёт через 24 часа."));
     box.replaceChildren(...[
-      h("a", { class: "logo auth-logo", href: "/" }, h("span", { class: "logo-mark", "aria-hidden": "true" }, "B"), S.cfg ? S.cfg.brand : "Baksi Cloud"),
+      brand("auth-brand"),
       expired ? h("div", { class: "alert warn" }, "Ссылка для входа устарела или уже использована. Войдите снова.") : null,
       S.cfg && S.cfg.notice ? h("div", { class: "alert warn" }, S.cfg.notice) : null,
       tabs,
@@ -355,7 +380,7 @@ function renderLogin(expired) {
     clearInterval(S.timer);
     const status = h("div", { class: "auth-wait" }, h("span", { class: "spinner", "aria-hidden": "true" }), "Ждём подтверждения в Telegram…");
     box.replaceChildren(
-      h("a", { class: "logo auth-logo", href: "/" }, h("span", { class: "logo-mark", "aria-hidden": "true" }, "B"), S.cfg.brand),
+      brand("auth-brand"),
       h("div", { class: "auth-steps" }, h("span", { class: "done" }, "1. Логин и пароль"), h("span", { class: "on" }, "2. Telegram")),
       h("h2", { class: "auth-title" }, "Привяжите Telegram"),
       h("p", { class: "auth-lead" }, "Нажмите кнопку, в Telegram откроется наш бот. Нажмите в нём «Запустить», и эта страница сама войдёт в кабинет."),

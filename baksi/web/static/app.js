@@ -138,11 +138,11 @@ function areaChart(points, { height = 220, format = (v) => v, ticks = 4 } = {}) 
   });
   const step = Math.max(1, Math.ceil(points.length / 6));
   const labels = points.map((p, i) => (i % step === 0 || i === points.length - 1) ? svg("text", { class: "axis", x: X(i), y: H - 6, "text-anchor": "middle" }, document.createTextNode(p.x)) : null);
-  const dot = svg("circle", { r: 5, fill: "#fff", stroke: "var(--accent)", "stroke-width": 3, cx: 0, cy: 0, opacity: 0 });
-  const guide = svg("line", { x1: 0, x2: 0, y1: T, y2: H - B, stroke: "rgba(91,92,240,.35)", "stroke-dasharray": "3 4", opacity: 0 });
+  const dot = svg("circle", { r: 5, fill: "#000", stroke: "#c6f24e", "stroke-width": 3, cx: 0, cy: 0, opacity: 0 });
+  const guide = svg("line", { x1: 0, x2: 0, y1: T, y2: H - B, stroke: "rgba(198,242,78,.35)", "stroke-dasharray": "3 4", opacity: 0 });
   const root = svg("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "График" },
     svg("defs", {}, svg("linearGradient", { id, x1: 0, y1: 0, x2: 0, y2: 1 },
-      svg("stop", { offset: "0%", "stop-color": "#5b5cf0", "stop-opacity": ".32" }), svg("stop", { offset: "100%", "stop-color": "#9db0ff", "stop-opacity": "0" }))),
+      svg("stop", { offset: "0%", "stop-color": "#c6f24e", "stop-opacity": ".30" }), svg("stop", { offset: "100%", "stop-color": "#c6f24e", "stop-opacity": "0" }))),
     grid, svg("path", { d: area, fill: `url(#${id})` }), svg("path", { class: "line", d }), guide, dot, labels);
   const tip = h("div", { class: "chart-tip", hidden: true });
   const box = h("div", { class: "chart-box" }, root, tip);
@@ -185,11 +185,11 @@ function donut(segments, { size = 170, label = "", sub = "" } = {}) {
     const el = svg("circle", { cx: 85, cy: 85, r: R, fill: "none", stroke: s.color, "stroke-width": 20, "stroke-dasharray": `${Math.max(0, len - 3)} ${C}`, "stroke-dashoffset": -offset, transform: "rotate(-90 85 85)", "stroke-linecap": "round" });
     offset += len;
     return el;
-  }) : [svg("circle", { cx: 85, cy: 85, r: R, fill: "none", stroke: "rgba(21,23,46,.08)", "stroke-width": 20 })];
+  }) : [svg("circle", { cx: 85, cy: 85, r: R, fill: "none", stroke: "rgba(255,255,255,.08)", "stroke-width": 20 })];
   return svg("svg", { viewBox: "0 0 170 170", width: size, height: size, role: "img", "aria-label": label + " " + sub },
     arcs,
-    svg("text", { x: 85, y: 82, "text-anchor": "middle", "font-size": 30, "font-weight": 300, fill: "var(--ink)" }, document.createTextNode(label)),
-    svg("text", { x: 85, y: 104, "text-anchor": "middle", "font-size": 12, fill: "var(--ink-2)" }, document.createTextNode(sub)));
+    svg("text", { x: 85, y: 82, "text-anchor": "middle", "font-size": 30, "font-weight": 300, fill: "#f2f5ec" }, document.createTextNode(label)),
+    svg("text", { x: 85, y: 104, "text-anchor": "middle", "font-size": 12, fill: "#a7ada2" }, document.createTextNode(sub)));
 }
 
 function ring(pct, color, text) {
@@ -312,7 +312,7 @@ async function pageHome() {
       h("div", { class: "bottom" }, h("div", { style: "display:grid;gap:6px" }, badge(b), h("span", { class: "hint" }, b.forever ? "Бессрочно" : (b.trial ? "Пробный до " : "До ") + date(b.expires_at))),
         h("div", { style: "display:grid;justify-items:center" }, ring(dl.pct, color[STATUS[b.status] || "idle"], dl.text), h("span", { class: "hint", style: "font-size:11px" }, dl.hint))));
   });
-  cards.push(h("a", { class: "bot-card", href: "#/catalog", style: "place-content:center;justify-items:center;text-align:center;min-height:150px;border-style:dashed" },
+  cards.push(h("a", { class: "bot-card", href: "#/catalog", style: "place-content:center;justify-items:center;text-align:center;min-height:150px;border-style:dashed;border-color:rgba(255,255,255,.14)" },
     h("span", { style: "font-size:30px;font-weight:300;line-height:1" }, "+"), h("b", {}, S.bots.length ? "Ещё один бот" : "Первый бот"), h("span", { class: "hint" }, "запуск за пару минут")));
   shell([
     h("div", { class: "page-head" }, h("div", {}, h("h1", {}, `Привет${S.me.first_name ? ", " + S.me.first_name : ""}`),
@@ -331,7 +331,7 @@ async function pageHome() {
       h("div", { class: "stack" },
         h("div", { class: "panel flush" }, h("h2", {}, "Последние операции", h("a", { href: "#/wallet", style: "font-size:14px;font-weight:500" }, "Все")),
           w.items.length ? h("div", { class: "list" }, w.items.slice(0, 7).map((o) => h("div", { class: "row", style: "cursor:default" },
-            h("span", { class: "avatar", style: `width:36px;height:36px;border-radius:12px;font-size:15px;background:${o.amount > 0 ? "#2fb36d" : "#5b5cf0"}` }, o.amount > 0 ? "+" : "−"),
+            h("span", { class: "avatar", style: `width:36px;height:36px;border-radius:12px;font-size:15px;background:${o.amount > 0 ? "#3f8f2a" : "#2f342c"}` }, o.amount > 0 ? "+" : "−"),
             h("span", { class: "grow" }, h("span", { class: "title", style: "font-weight:500" }, o.note), h("span", { class: "meta" }, dateTime(o.created_at))),
             h("b", { class: o.amount > 0 ? "pos" : "" }, (o.amount > 0 ? "+" : "") + money(o.amount)))))
             : h("div", { class: "empty" }, "Операций пока нет.")),
@@ -846,7 +846,7 @@ async function boot() {
   document.title = `Кабинет · ${S.cfg.brand}`;
   if (TG) {
     TG.ready(); TG.expand();
-    try { TG.setHeaderColor("#e7ebfa"); TG.setBackgroundColor("#e7ebfa"); } catch (e) { /* старые клиенты */ }
+    try { TG.setHeaderColor("#000000"); TG.setBackgroundColor("#000000"); } catch (e) { /* старые клиенты */ }
     try {
       const r = await api("POST", "/api/auth/webapp", { init_data: TG.initData });
       S.token = r.token; sessionStorage.setItem("bc_token", r.token);

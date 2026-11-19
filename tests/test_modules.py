@@ -108,6 +108,34 @@ class ExpressTests(ModuleBase):
         self.assertEqual(sorted(f.source_id for f in self.session.to(GROUP, "forward")), [300, 301, 302, 303, 304])
         self.assertEqual(self.group_sends(), [])
 
+    async def test_types_and_customer_reactions(self):
+        from aiogram.types import PhotoSize, Sticker
+        await self.bind()
+        await self.feed(message_update(CLIENT, user(CLIENT), "Текст", mid=60))
+        self.assertEqual(self.session.reaction_emoji[(CLIENT, 60)], ["👍"], "заказчик видит, что доставлено")
+        photo = {"photo": [PhotoSize(file_id="f", file_unique_id="u", width=10, height=10)]}
+        sticker = {"sticker": Sticker(file_id="s", file_unique_id="su", type="regular", width=1, height=1,
+                                      is_animated=False, is_video=False)}
+        await self.feed(message_update(CLIENT, user(CLIENT), None, mid=61, extra=sticker))
+        self.assertEqual(self.session.reaction_emoji[(CLIENT, 61)], ["👎"], "стикер не пересылается никогда")
+        self.assertIn("не принимаются", self.session.to(CLIENT, "send")[-1].text)
+        # владелец разрешает только фото
+        for key in ("text", "video", "audio", "document"):
+            await self.feed(callback_update(OWNER, user(OWNER), f"exa:type:{key}"))
+        self.assertEqual(self.ex.opt("types"), ["photo"])
+        await self.feed(callback_update(OWNER, user(OWNER), "exa:type:photo"))
+        self.assertEqual(self.ex.opt("types"), ["photo"], "хотя бы один тип остаётся")
+        await self.feed(message_update(CLIENT, user(CLIENT), "Текст нельзя", mid=62))
+        self.assertEqual(self.session.reaction_emoji[(CLIENT, 62)], ["👎"])
+        await self.feed(message_update(CLIENT, user(CLIENT), None, mid=63, extra=photo))
+        self.assertEqual(self.session.reaction_emoji[(CLIENT, 63)], ["👍"])
+        forwarded = [f.source_id for f in self.session.to(GROUP, "forward")]
+        self.assertEqual(forwarded, [60, 63])
+        hints = [x for x in self.session.to(CLIENT, "send") if "не принимаются" in (x.text or "")]
+        self.assertEqual(len(hints), 1, "подсказка не чаще раза в 10 минут")
+        await self.feed(message_update(CLIENT, user(CLIENT), "/start", mid=64))
+        self.assertEqual(self.session.to(GROUP, "forward")[-1].source_id, 64, "/start пересылается всегда")
+
     async def test_owner_greeting_design(self):
         plat = Path(os.environ["BAKSI_PLATFORM_FILE"])
         data = json.loads(plat.read_text())
@@ -217,6 +245,13 @@ class SvyazTests(ModuleBase):
         await self.feed(message_update(CLIENT, user(CLIENT, "Клиент"), "Алло", mid=92))
         self.assertEqual(self.texts(42).count("обращение #1"), 1, "без повторной карточки")
         self.assertEqual(self.session.to(42, "copy")[-1].source_id, 92)
+
+    async def test_client_sees_delivery_reaction(self):
+        await self.feed(message_update(CLIENT, user(CLIENT), "Никого нет?", mid=88))
+        self.assertEqual(self.session.reaction_emoji[(CLIENT, 88)], ["👎"], "некому доставить - 👎")
+        await self.add_operator(SELLER, "Данияр")
+        await self.feed(message_update(CLIENT, user(CLIENT), "А теперь?", mid=89))
+        self.assertEqual(self.session.reaction_emoji[(CLIENT, 89)], ["👍"])
 
     async def test_reply_is_anonymous_and_mirrored(self):
         await self.add_operator(SELLER, "Данияр")

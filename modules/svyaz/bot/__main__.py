@@ -572,7 +572,12 @@ async def _private_message(message: Message, sv: Svyaz) -> None:
     fresh = not await sv.db.one("SELECT 1 FROM history WHERE dialog_id = ? LIMIT 1", dialog["id"])
     await sv.remember(dialog["id"], "client", uid, message.message_id)
     await sv.db.run("UPDATE dialogs SET last_at = ? WHERE id = ?", now(), dialog["id"])
-    await sv.deliver_from_client(dialog, message)
+    delivered = await sv.deliver_from_client(dialog, message)
+    try:  # клиент видит: 👍 - сообщение дошло до операторов или группы, 👎 - не дошло
+        await sv.bot.set_message_reaction(message.chat.id, message.message_id,
+                                          [ReactionTypeEmoji(emoji="👍" if delivered else "👎")])
+    except TelegramBadRequest:
+        pass
     if fresh:  # клиенту одно короткое подтверждение на обращение, без подробностей о том, кто его увидит
         await message.answer(sv.opt("received"))
 
@@ -717,7 +722,7 @@ async def admin_view(sv: Svyaz) -> tuple[str, Any]:
     empty = not ops and not group
     rows = [[kit.btn("👥 Операторы", "sva:ops", style="primary" if empty else None), kit.btn("💬 Группа", "sva:group")],
             [kit.btn("✏️ Тексты", "sva:texts"), kit.btn("🚫 Фильтры", "sva:flt")],
-            [kit.btn("⛔️ Заблокированные", "sva:bans"), menu_button()],
+            [kit.btn("⛔️ Баны", "sva:bans"), menu_button()],
             [kit.btn("🔄 Обновить", "sva:home")]]
     return "\n".join(lines), kit.kb(rows)
 
@@ -886,9 +891,13 @@ async def bans(call: CallbackQuery, sv: Svyaz) -> None:
     if not sv.is_owner(call.from_user.id):
         return
     rows = await sv.db.all("SELECT * FROM clients WHERE banned = 1 ORDER BY created_at DESC LIMIT 40")
-    buttons = [[kit.btn(f"✅ Разбанить {r['first_name'] or r['id']}", f"sva:unban:{r['id']}")] for r in rows]
+    buttons = [[kit.btn(f"✅ {(r['first_name'] or str(r['id']))[:20]}", f"sva:unban:{r['id']}")] for r in rows]
     buttons.append(BACK)
-    await show(call, "⛔️ <b>Заблокированные</b>" + ("" if rows else "\n\nСписок пуст."), kit.kb(buttons))
+    text = ("⛔️ <b>Баны</b>\n\nЗаблокировать: оператор отвечает <code>/ban</code> на сообщение клиента (в группе - админ "
+            "с правом блокировки). Разблокировать: <code>/unban ID</code> или кнопкой ниже.\n\n"
+            + ("\n".join(f"• {esc(r['first_name'] or 'без имени')} · <code>{r['id']}</code>" for r in rows) if rows
+               else "Сейчас никто не заблокирован."))
+    await show(call, text, kit.kb(buttons))
 
 
 @router.callback_query(F.data.startswith("sva:unban:"))

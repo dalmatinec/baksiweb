@@ -81,7 +81,10 @@ MIGRATIONS = [
 DEFAULTS = {
     "greeting": "👋 Здравствуйте! Напишите, что вам нужно: текст, фото, голосовые. Ответ придёт сюда.",
     "anonymous": False,      # ответы исполнителей копией, без имени
+    "types": ["text", "photo", "video", "audio", "document"],  # что заказчик может присылать
 }
+# что можно разрешить; всё остальное (стикеры, GIF, кружки, опросы, геолокация) не пересылается никогда
+KINDS = [("text", "Текст"), ("photo", "Фото"), ("video", "Видео"), ("audio", "Аудио и голосовые"), ("document", "Документы")]
 TEXTS = [("greeting", "👋 Приветствие")]
 RATE_WINDOW, RATE_LIMIT = 60, 12  # сообщений от заказчика в минуту
 
@@ -99,6 +102,7 @@ class Express:
         self.bot = bot
         self.db = db
         self.rate: dict[int, list[float]] = {}
+        self.hinted: dict[int, float] = {}
         # сообщения одного заказчика обрабатываем по очереди: альбом из 5 фото приходит одновременно,
         # и без замка получилось бы 5 заявок вместо одной
         self.user_locks: dict[int, asyncio.Lock] = {}
@@ -159,6 +163,29 @@ class AdminForm(StatesGroup):
 OWNER_COMMANDS = ("/admin", "/ban", "/unban", "/bind", "/captcha")
 
 
+def kind_of(message: Message) -> str | None:
+    if message.photo:
+        return "photo"
+    if message.video:
+        return "video"
+    if message.audio or message.voice:
+        return "audio"
+    if message.document and not message.animation:
+        return "document"
+    if message.text:
+        return "text"
+    return None  # стикеры, GIF, кружки, опросы, контакты, геолокация
+
+
+async def react(ex: Express, message: Message, ok: bool) -> None:
+    """Заказчик видит: 👍 - доставлено исполнителям, 👎 - не доставлено."""
+    try:
+        await ex.bot.set_message_reaction(message.chat.id, message.message_id,
+                                          [ReactionTypeEmoji(emoji="👍" if ok else "👎")])
+    except TelegramBadRequest:
+        pass
+
+
 async def forward_to_group(message: Message, ex: Express, quiet: bool = False) -> None:
     user = message.from_user
     group = kit.bound_chat_id()
@@ -177,18 +204,40 @@ async def forward_to_group(message: Message, ex: Express, quiet: bool = False) -
                     user.id, user.username, user.first_name, now())
     if await ex.db.value("SELECT banned FROM users WHERE id = ?", user.id, default=0):
         return
+    is_start = (message.text or "").startswith("/start")
+    kind = kind_of(message)
+    if not is_start and kind not in ex.opt("types"):
+        await react(ex, message, False)
+        await types_hint(ex, message)
+        return
     if ex.flood(user.id):
-        return  # больше 12 сообщений в минуту - молча не пересылаем, чтобы не засорять группу
+        await react(ex, message, False)  # больше 12 сообщений в минуту - не пересылаем, чтобы не засорять группу
+        return
     try:
         fwd = await ex.bot.forward_message(group, user.id, message.message_id)
     except TelegramBadRequest as exc:
         log.warning("Не удалось переслать в группу: %s", exc.message)
+        await react(ex, message, False)
         return
     except TelegramForbiddenError:
         kit.notify("⚠️ Бот не может писать в группу исполнителей: проверьте, что он в группе и ему можно писать.")
+        await react(ex, message, False)
         return
+    if not is_start:
+        await react(ex, message, True)
     await ex.db.run("INSERT OR REPLACE INTO group_msgs(chat_id, message_id, ticket_id, user_id, created_at) "
                     "VALUES (?, ?, 0, ?, ?)", group, fwd.message_id, user.id, now())
+
+
+async def types_hint(ex: Express, message: Message) -> None:
+    """Подсказка, что принимается, - не чаще раза в 10 минут, чтобы не спамить."""
+    uid = message.from_user.id
+    last = ex.hinted.get(uid)
+    if last is not None and time.monotonic() - last < 600:
+        return
+    ex.hinted[uid] = time.monotonic()
+    allowed = [title.lower() for key, title in KINDS if key in ex.opt("types")]
+    await message.answer("Такие сообщения не принимаются. Можно отправить: " + (", ".join(allowed) or "ничего") + ".")
 
 
 @router.message(CommandStart(), F.chat.type == "private")
@@ -396,10 +445,47 @@ async def admin_texts(call: CallbackQuery, ex: Express, state: FSMContext) -> No
 
 
 def settings_view(ex: Express):
+    allowed = [title.lower() for key, title in KINDS if key in ex.opt("types")]
     text = ("⚙️ <b>Настройки</b>\n\n"
-            f"🕶 Ответы заказчику: <b>{'копией, без имени исполнителя' if ex.opt('anonymous') else 'форвардом, с именем'}</b>\n\n"
-            "Заказчик пишет боту - сообщение уходит в группу форвардом. Ответить можно реплаем в любое время.")
-    return text, kit.kb([[kit.btn("🕶 Анонимно: " + ("вкл" if ex.opt("anonymous") else "выкл"), "exa:tog:anonymous")], BACK])
+            f"1. 🕶 Ответы заказчику: <b>{'копией, без имени исполнителя' if ex.opt('anonymous') else 'форвардом, с именем'}</b>\n"
+            f"2. 📎 Заказчик может присылать: <b>{', '.join(allowed) or 'ничего'}</b>\n\n"
+            "Заказчик пишет боту - сообщение уходит в группу форвардом, у него появляется 👍. Ответить можно реплаем "
+            "в любое время.")
+    return text, kit.kb([[kit.btn("🕶 Анонимно: " + ("вкл" if ex.opt("anonymous") else "выкл"), "exa:tog:anonymous")],
+                         [kit.btn("📎 Типы сообщений", "exa:types")], BACK])
+
+
+def types_view(ex: Express):
+    on = ex.opt("types")
+    text = ("📎 <b>Типы сообщений</b>\nЧто заказчик может присылать. Остальное (стикеры, GIF, кружки, опросы, "
+            "геолокацию) бот не пересылает никогда, а заказчик видит 👎 и подсказку.")
+    rows = [[kit.btn(("✅ " if key in on else "▫️ ") + title, f"exa:type:{key}")] for key, title in KINDS]
+    return text, kit.kb(rows + [[kit.btn("⬅️ Назад", "exa:set")]])
+
+
+@router.callback_query(F.data == "exa:types")
+async def admin_types(call: CallbackQuery, ex: Express) -> None:
+    if ex.is_owner(call.from_user.id):
+        await show(call, *types_view(ex))
+
+
+@router.callback_query(F.data.startswith("exa:type:"))
+async def admin_type_toggle(call: CallbackQuery, ex: Express) -> None:
+    if not ex.is_owner(call.from_user.id):
+        return
+    key = call.data.split(":")[2]
+    if key not in dict(KINDS):
+        return
+    on = list(ex.opt("types"))
+    if key in on:
+        if len(on) == 1:
+            await call.answer("Должен остаться хотя бы один тип", show_alert=True)
+            return
+        on.remove(key)
+    else:
+        on.append(key)
+    await ex.db.set("types", [k for k, _ in KINDS if k in on])
+    await show(call, *types_view(ex))
 
 
 @router.callback_query(F.data == "exa:set")

@@ -531,10 +531,13 @@ async def view_home(ctx: Ctx) -> ViewResult:
     for key, (title, sections) in CATEGORIES.items():
         if any(allowed(p) for p, _, _ in sections):
             mark = f" ⚠️{len(broken)}" if key == "content" and broken else ""
-            rows.append(b(title + mark, f"a:cat:{key}"))
-    rows = [rows[i:i + 2] for i in range(0, len(rows), 2)]
+            text, style, icon = _ui_button(f"adm_{key}", title)
+            rows.append(b(text + mark, f"a:cat:{key}", style, icon))
+    cols = _ui_cols("adm_home_cols", 2)
+    rows = [rows[i:i + cols] for i in range(0, len(rows), cols)]
     if allowed("stats"):
-        rows.append([b("📊 Статистика", "a:stats")])
+        text, style, icon = _ui_button("adm_stats", "📊 Статистика")
+        rows.append([b(text, "a:stats", style, icon)])
     rows.append([b("✖️ Закрыть", "x:close")])
     today = now() - 86400
     joins = await app.db.fetchval("SELECT COUNT(*) FROM joins WHERE ts > ?", (today,))
@@ -558,6 +561,22 @@ async def view_home(ctx: Ctx) -> ViewResult:
     if broken:
         html += "\n\n⚠️ Не работают кнопки: " + ", ".join(f"{escape(i.label)}" for i in broken[:5])
     return html, rows
+
+
+def _ui_button(key: str, default: str) -> tuple[str, str | None, str | None]:
+    try:
+        import baksi_kit
+        return baksi_kit.ui_button(key, default)
+    except ImportError:
+        return default, None, None
+
+
+def _ui_cols(key: str, default: int) -> int:
+    try:
+        import baksi_kit
+        return baksi_kit.ui_cols(key, default)
+    except ImportError:
+        return default
 
 
 # Разделы админки по категориям: (право, кнопка, экран)
@@ -594,6 +613,7 @@ CONFIG_SECTIONS = CATEGORIES["system"][1]
 @view("cat")
 async def view_category(ctx: Ctx, key: str = "content") -> ViewResult:
     title, sections = CATEGORIES.get(key, CATEGORIES["content"])
+    title = _ui_button(f"adm_{key}", title)[0]
     perms = ctx.app.perms(ctx.user_id) or set()
     rows = [[b(t, cb)] for p, t, cb in sections if "*" in perms or p in perms]  # по одной: длинные названия не обрезаются
     rows.append(back_btn("a:home"))

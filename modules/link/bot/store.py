@@ -7,6 +7,21 @@ from typing import Any
 
 from .db import Database
 
+try:  # под платформой Baksi Cloud владелец может задать тексты и кнопки по умолчанию для всех ботов
+    import baksi_kit as _kit
+except ImportError:
+    _kit = None
+
+_SEED: dict | None = None
+
+
+def _seed() -> dict:
+    global _SEED
+    if _SEED is None:
+        from pathlib import Path
+        _SEED = json.loads((Path(__file__).with_name("seed.json")).read_text(encoding="utf-8"))
+    return _SEED
+
 STYLES = (None, "primary", "success", "danger")
 STYLE_NAMES = {None: "обычная", "primary": "синяя", "success": "зелёная", "danger": "красная"}
 PLACEMENTS = {"start": "🏠 После /start", "link": "🔗 После выдачи ссылки"}
@@ -128,10 +143,24 @@ class Store:
         return self.settings.get(key, default)
 
     def text(self, key: str) -> Text:
-        return self.texts.get(key) or Text(key, "", None)
+        t = self.texts.get(key) or Text(key, "", None)
+        if _kit is not None:
+            default = _seed()["texts"].get(key)
+            override = (_kit.ui().get("texts") or {}).get(key)
+            if override and (not t.html or t.html == default):  # клиент текст не менял - берём от владельца
+                return Text(key, override, t.media_id)
+        return t
 
     def button(self, key: str) -> Button:
-        return self.buttons.get(key) or Button(key, key, None, None)
+        b = self.buttons.get(key) or Button(key, key, None, None)
+        if _kit is not None:
+            seed = _seed()["buttons"].get(key, {})
+            untouched = b.label in (key, seed.get("label")) and not b.icon and b.style == seed.get("style")
+            o = (_kit.ui().get("buttons") or {}).get(key)
+            if o and untouched:
+                return Button(key, o.get("text") or b.label, o.get("icon") or None,
+                              o.get("style") if o.get("style") in STYLES else b.style)
+        return b
 
     def item_ready(self, item: Item) -> bool:
         """Кнопка может выдавать ссылки прямо сейчас."""

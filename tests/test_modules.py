@@ -98,6 +98,26 @@ class ExpressTests(ModuleBase):
         await self.feed(message_update(GROUP, user(SELLER, "Данияр"), "Ещё", mid=502, reply_to=fwd.message_id))
         self.assertEqual(len(self.session.to(CLIENT, "forward")), 1, "в закрытую заявку не отвечаем")
 
+    async def test_owner_design_applies(self):
+        """Оформление от владельца платформы: текст карточки и кнопки меняются, своя правка клиента важнее."""
+        plat = Path(os.environ["BAKSI_PLATFORM_FILE"])
+        data = json.loads(plat.read_text())
+        data["ui"] = {"texts": {"card": "🔥 Новая заявка №{номер}", "greeting": "Привет от владельца"},
+                      "buttons": {"ex_close": {"text": "Готово", "style": "primary", "icon": "123"}}}
+        plat.write_text(json.dumps(data))
+        baksi_kit._platform_cache = None
+        await self.bind()
+        await self.feed(message_update(CLIENT, user(CLIENT), "Нужна помощь"))
+        card = [s for s in self.session.to(GROUP, "send") if "Новая заявка" in (s.text or "")][-1]
+        self.assertEqual(card.text, "🔥 Новая заявка №1")
+        close = card.markup.inline_keyboard[0][0]
+        self.assertEqual((close.text, close.style, close.icon_custom_emoji_id), ("Готово", "primary", "123"))
+        await self.feed(message_update(CLIENT, user(CLIENT), "/start"))
+        self.assertEqual(self.session.to(CLIENT)[-1].text, "Привет от владельца")
+        await self.ex.db.set("greeting", "Своё приветствие клиента")
+        await self.feed(message_update(CLIENT, user(CLIENT), "/start"))
+        self.assertEqual(self.session.to(CLIENT)[-1].text, "Своё приветствие клиента")
+
     async def test_ban_and_cooldown(self):
         await self.bind()
         await self.feed(message_update(CLIENT, user(CLIENT), "Привет"))

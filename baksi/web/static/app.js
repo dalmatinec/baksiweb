@@ -97,6 +97,7 @@ const ICONS = {
   card: '<rect x="2" y="5" width="20" height="14" rx="2"/><path d="M2 10h20"/>',
   cog: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>',
   back: '<path d="M15 18l-6-6 6-6"/>',
+  palette: '<path d="M12 22a10 10 0 1 1 10-10c0 2.2-1.8 3-3.5 3H16a2 2 0 0 0-1.4 3.4A2 2 0 0 1 12 22z"/><circle cx="7.5" cy="10.5" r="1.2"/><circle cx="11" cy="6.5" r="1.2"/><circle cx="16" cy="8" r="1.2"/>',
 };
 const icon = (name) => h("span", { "aria-hidden": "true", html: `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${ICONS[name] || ""}</svg>` });
 
@@ -222,7 +223,7 @@ function navItems() {
   ];
   const admin = [
     ["#/admin", "Обзор", "chart"], ["#/admin/instances", "Копии ботов", "server"], ["#/admin/users", "Клиенты", "users"],
-    ["#/admin/catalog", "Тарифы", "tag"], ["#/admin/promos", "Промокоды", "gift"], ["#/admin/payments", "Платежи", "card"],
+    ["#/admin/catalog", "Тарифы", "tag"], ["#/admin/design", "Оформление", "palette"], ["#/admin/promos", "Промокоды", "gift"], ["#/admin/payments", "Платежи", "card"],
     ["#/admin/settings", "Настройки", "cog"],
   ];
   return { items, admin: S.me && S.me.is_owner ? admin : [] };
@@ -248,7 +249,10 @@ function shell(content) {
   const tabs = h("nav", { class: "tabbar", "aria-label": "Разделы" },
     [...items, ...(admin.length ? [["#/admin", "Админка", "chart"]] : [])].map(([href, label, ic]) =>
       h("a", { href, class: isActive(href) || (href === "#/admin" && location.hash.startsWith("#/admin")) ? "on" : null }, icon(ic), label)));
-  $root().replaceChildren(h("div", { class: "shell" }, side, h("main", { class: "main" }, h("div", { class: "wrap" }, content)), tabs));
+  const subnav = admin.length && location.hash.startsWith("#/admin")
+    ? h("nav", { class: "admin-subnav", "aria-label": "Разделы админки" }, admin.map(([href, label]) => h("a", { href, class: isActive(href) ? "btn small primary" : "btn small" }, label)))
+    : null;
+  $root().replaceChildren(h("div", { class: "shell" }, side, h("main", { class: "main" }, h("div", { class: "wrap" }, subnav, content)), tabs));
   window.scrollTo(0, 0);
 }
 
@@ -814,6 +818,120 @@ async function pageAdminSettings() {
   ]);
 }
 
+// ---------- оформление ботов ----------
+const TG_ALLOWED = { B: "b", STRONG: "b", I: "i", EM: "i", U: "u", INS: "u", S: "s", STRIKE: "s", DEL: "s", CODE: "code", PRE: "pre", BLOCKQUOTE: "blockquote", A: "u", "TG-SPOILER": "span", SPAN: "span" };
+const SAMPLE = { "имя": "Айгерим", "кнопка": "VIP-канал", "время": "23 ч", "кнопки": "VIP-канал", "бренд": "Baksi Cloud", "баланс": "$30.00", "ботов": "2 · работают 2", "id": "7829104", "номер": "12" };
+
+function tgPreview(html) {
+  const text = String(html || "").replace(/\{([^}]+)\}/g, (m, k) => SAMPLE[k] ?? m);
+  const doc = new DOMParser().parseFromString(`<div>${text}</div>`, "text/html");
+  const walk = (node) => {
+    if (node.nodeType === 3) return document.createTextNode(node.textContent);
+    if (node.nodeType !== 1) return null;
+    const tag = node.tagName.toUpperCase();
+    if (tag === "TG-EMOJI") return h("span", { class: "tg-premium", title: "премиум-эмодзи" }, node.textContent);
+    const kids = [...node.childNodes].map(walk);
+    return TG_ALLOWED[tag] ? h(TG_ALLOWED[tag], {}, kids) : h("span", {}, kids);
+  };
+  return [...doc.body.firstChild.childNodes].map(walk);
+}
+
+async function pageAdminDesign(slug) {
+  const r = await api("GET", "/api/admin/design");
+  const target = r.items.find((t) => t.slug === slug) || r.items[0];
+  const sc = target.schema;
+  const vals = JSON.parse(JSON.stringify(target.values || {}));
+  vals.texts = vals.texts || {}; vals.buttons = vals.buttons || {}; vals.layout = vals.layout || {};
+  const defText = Object.fromEntries((sc.texts || []).map((t) => [t.key, t.default]));
+  const defBtn = Object.fromEntries((sc.buttons || []).map((x) => [x.key, x]));
+  const defLay = Object.fromEntries((sc.layout || []).map((x) => [x.key, x.default]));
+  let screen = 0;
+  const preview = h("div", { class: "tg-chat" });
+  const screens = h("div", { class: "actions" });
+
+  const btnView = (key) => {
+    if (key === "__menu__") return ["🔗 VIP-канал", "💬 Чат"].map((t) => h("span", { class: "tg-btn" }, t));
+    if (key === "__dept__") return [h("span", { class: "tg-btn" }, "Отдел")];
+    const d = defBtn[key] || { default: key };
+    const o = vals.buttons[key] || {};
+    const style = o.style !== undefined ? o.style : d.style;
+    return [h("span", { class: "tg-btn" + (style ? " " + style : "") }, o.icon ? h("span", { class: "tg-premium", title: "премиум-иконка" }, "★") : null, o.text || d.default)];
+  };
+  function renderPreview() {
+    screens.replaceChildren(...(sc.screens || []).map((x, i) => h("button", { class: "btn small" + (i === screen ? " primary" : ""), onclick: () => { screen = i; renderPreview(); } }, x.title)));
+    const scr = (sc.screens || [])[screen];
+    if (!scr) { preview.replaceChildren(); return; }
+    const rows = [];
+    (scr.rows_before || []).forEach((row) => rows.push(row.flatMap(btnView)));
+    if (scr.layout) {
+      const cols = +(vals.layout[scr.layout] || defLay[scr.layout] || 1);
+      const items = scr.buttons.flatMap(btnView);
+      for (let i = 0; i < items.length; i += cols) rows.push(items.slice(i, i + cols));
+    }
+    (scr.rows || []).forEach((row) => rows.push(row.flatMap(btnView)));
+    preview.replaceChildren(
+      scr.text ? h("div", { class: "tg-bubble" }, tgPreview(vals.texts[scr.text] || defText[scr.text])) : h("div", { class: "tg-bubble muted" }, "Сообщение бота"),
+      rows.length ? h("div", { class: "tg-kb" }, rows.map((row) => h("div", { class: "tg-row" }, row))) : null);
+  }
+
+  const textFields = (sc.texts || []).map((t) => {
+    const area = h("textarea", { rows: 3, "aria-label": t.label, oninput: (e) => { vals.texts[t.key] = e.target.value; screen = Math.max(0, (sc.screens || []).findIndex((x) => x.text === t.key)); renderPreview(); },
+      onfocus: () => { const i = (sc.screens || []).findIndex((x) => x.text === t.key); if (i >= 0) { screen = i; renderPreview(); } } });
+    area.value = vals.texts[t.key] || t.default;
+    return h("label", { class: "field" }, h("span", { style: "display:flex;justify-content:space-between;gap:10px" }, t.label,
+      h("button", { type: "button", class: "btn small ghost", onclick: () => { area.value = t.default; delete vals.texts[t.key]; renderPreview(); } }, "Сбросить")),
+    area, t.hint ? h("span", {}, "Подстановки: " + t.hint) : null);
+  });
+  const buttonFields = (sc.buttons || []).map((x) => {
+    const o = vals.buttons[x.key] || {};
+    const set = (k, v) => { vals.buttons[x.key] = { ...(vals.buttons[x.key] || {}), [k]: v }; renderPreview(); };
+    const text = h("input", { type: "text", value: o.text || "", placeholder: x.default, "aria-label": `${x.label}: подпись`, oninput: (e) => set("text", e.target.value) });
+    const style = h("select", { "aria-label": `${x.label}: цвет`, onchange: (e) => set("style", e.target.value === "default" ? undefined : e.target.value) },
+      [["default", x.style ? `Стандарт (${({ primary: "синяя", success: "зелёная", danger: "красная" })[x.style]})` : "Стандарт"], ["", "Обычная"], ["primary", "Синяя"], ["success", "Зелёная"], ["danger", "Красная"]]
+        .map(([v, l]) => h("option", { value: v, selected: (o.style === undefined ? "default" : (o.style || "")) === v }, l)));
+    const icon = h("input", { type: "text", inputmode: "numeric", value: o.icon || "", placeholder: "ID премиум-эмодзи", "aria-label": `${x.label}: премиум-иконка`, oninput: (e) => set("icon", e.target.value.trim()) });
+    return h("div", { class: "btn-edit" }, h("b", {}, x.label), h("div", { class: "btn-edit-grid" }, text, style, icon));
+  });
+  const layoutFields = (sc.layout || []).map((x) => h("label", { class: "field" }, h("span", {}, x.label),
+    h("select", { onchange: (e) => { vals.layout[x.key] = +e.target.value; renderPreview(); } },
+      [1, 2, 3].map((n) => h("option", { value: n, selected: +(vals.layout[x.key] || x.default) === n }, n === 1 ? "По одной" : n === 2 ? "По две" : "По три")))));
+
+  const save = h("button", { class: "btn primary" }, "Сохранить и применить");
+  save.onclick = async () => {
+    const texts = {};
+    for (const [k, v] of Object.entries(vals.texts)) if (v && v.trim() && v.trim() !== (defText[k] || "").trim()) texts[k] = v;
+    const buttons = {};
+    for (const [k, v] of Object.entries(vals.buttons)) {
+      const item = {};
+      if (v.text && v.text.trim()) item.text = v.text;
+      if (v.style !== undefined) item.style = v.style;
+      if (v.icon) item.icon = v.icon;
+      if (Object.keys(item).length) buttons[k] = item;
+    }
+    const res = await act(save, () => api("POST", `/api/admin/design/${target.slug}`, { texts, buttons, layout: vals.layout }));
+    if (res) toast(target.slug === "hub" ? "Хаб-бот обновлён" : `Применено: ботов ${res.applied}`);
+  };
+
+  shell([
+    head("Оформление ботов", h("button", { class: "btn primary", onclick: () => save.click() }, "Сохранить")),
+    h("div", { class: "actions" }, r.items.map((t) => h("a", { class: "btn small" + (t.slug === target.slug ? " primary" : ""), href: `#/admin/design/${t.slug}` }, t.title))),
+    h("div", { class: "alert ok" }, target.note),
+    h("div", { class: "dash" },
+      h("div", { class: "stack" },
+        textFields.length ? h("div", { class: "panel", style: "display:grid;gap:16px" }, h("h2", { style: "margin:0" }, "Тексты"),
+          h("p", { class: "hint" }, "Можно HTML: <b>жирный</b>, <i>курсив</i>, <a href=\"…\">ссылка</a>, <blockquote>цитата</blockquote>. Премиум-эмодзи в тексте: <tg-emoji emoji-id=\"ID\">😀</tg-emoji>"),
+          textFields) : null,
+        buttonFields.length ? h("div", { class: "panel", style: "display:grid;gap:14px" }, h("h2", { style: "margin:0" }, "Кнопки"),
+          h("p", { class: "hint" }, "Пустая подпись - останется стандартная. ID премиум-эмодзи: пришлите нужный премиум-эмодзи своему хаб-боту, он ответит его ID с кнопкой «Скопировать»."),
+          buttonFields) : null,
+        layoutFields.length ? h("div", { class: "panel", style: "display:grid;gap:14px" }, h("h2", { style: "margin:0" }, "Раскладка"), layoutFields) : null,
+        h("div", { class: "actions" }, save)),
+      h("div", { class: "panel design-preview" }, h("h2", {}, "Как это увидят"), screens, preview,
+        h("p", { class: "hint" }, "★ - здесь будет премиум-иконка. Подстановки показаны на примере."))),
+  ]);
+  renderPreview();
+}
+
 // ---------- маршруты ----------
 async function route() {
   clearInterval(S.timer);
@@ -832,7 +950,7 @@ async function route() {
     else if (parts[0] === "referrals") await pageReferrals();
     else if (parts[0] === "admin" && admin) {
       const sub = parts[1] || "";
-      await ({ "": pageAdmin, instances: pageAdminInstances, users: pageAdminUsers, user: () => pageAdminUser(+parts[2]), catalog: pageAdminCatalog, promos: pageAdminPromos, payments: pageAdminPayments, settings: pageAdminSettings }[sub] || pageAdmin)();
+      await ({ "": pageAdmin, instances: pageAdminInstances, users: pageAdminUsers, user: () => pageAdminUser(+parts[2]), catalog: pageAdminCatalog, design: () => pageAdminDesign(parts[2]), promos: pageAdminPromos, payments: pageAdminPayments, settings: pageAdminSettings }[sub] || pageAdmin)();
     } else { location.hash = "#/"; }
   } catch (e) {
     if (e.status === 401) return;

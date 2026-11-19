@@ -86,6 +86,7 @@ DEFAULTS = {
     "auto_close_hours": 24,  # закрыть заявку без активности
     "close_by_anyone": False,
 }
+CARD_TEXT = "📨 Заявка #{номер} от {имя}\nОтветьте реплаем на заявку, ответ уйдёт заказчику."
 RATE_WINDOW, RATE_LIMIT = 60, 12  # сообщений от заказчика в минуту
 
 
@@ -105,7 +106,12 @@ class Express:
         self.admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
 
     def opt(self, key: str):
-        return self.db.get(key, DEFAULTS[key])
+        """Своя настройка клиента → оформление от владельца платформы → значение по умолчанию."""
+        value = self.db.get(key)
+        if value is not None:
+            return value
+        default = DEFAULTS[key]
+        return kit.ui_text(key, default) if isinstance(default, str) else default
 
     def is_owner(self, user_id: int) -> bool:
         return user_id in kit.owner_ids()
@@ -243,12 +249,12 @@ async def from_customer(message: Message, ex: Express) -> None:
             pass
     if created:
         name = esc(user.full_name)
+        who = name + (f" (@{esc(user.username)})" if user.username else "")
+        card = kit.ui_text("card", CARD_TEXT).replace("{номер}", str(ticket_id)).replace("{имя}", who)
         control = await ex.bot.send_message(
-            group, f"📨 Заявка #{ticket_id} от {name}" + (f" (@{esc(user.username)})" if user.username else "") +
-            "\nОтветьте реплаем на заявку, ответ уйдёт заказчику.",
-            reply_to_message_id=fwd.message_id,
-            reply_markup=kit.kb([[kit.btn("✅ Закрыть заявку", f"ex:close:{ticket_id}", style="success"),
-                                  kit.btn("⛔️ Бан", f"ex:ban:{user.id}", style="danger")]]),
+            group, card, reply_to_message_id=fwd.message_id,
+            reply_markup=kit.kb([[kit.ui_btn("ex_close", "✅ Закрыть заявку", f"ex:close:{ticket_id}", style="success"),
+                                  kit.ui_btn("ex_ban", "⛔️ Бан", f"ex:ban:{user.id}", style="danger")]]),
             disable_notification=True)
         await ex.db.run("UPDATE tickets SET control_id = ? WHERE id = ?", control.message_id, ticket_id)
         await ex.db.run("INSERT OR REPLACE INTO group_msgs(chat_id, message_id, ticket_id, user_id, created_at) "
@@ -323,7 +329,7 @@ async def close_ticket(call: CallbackQuery, ex: Express) -> None:
                                 default=0)
     try:
         await call.message.edit_text(f"✅ Заявка #{ticket_id} закрыта · ответили исполнителей: {sellers}",
-                                     reply_markup=kit.kb([[kit.btn("⛔️ Бан", f"ex:ban:{ticket['user_id']}")]]))
+                                     reply_markup=kit.kb([[kit.ui_btn("ex_ban", "⛔️ Бан", f"ex:ban:{ticket['user_id']}", style="danger")]]))
     except TelegramBadRequest:
         pass
     await call.answer("Заявка закрыта")

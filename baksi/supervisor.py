@@ -89,6 +89,7 @@ class Supervisor:
         self.vault = vault
         self.procs: dict[int, Proc] = {}
         self.status_cache: dict[int, tuple[str, str]] = {}
+        self.ui: dict[str, dict] = {}  # оформление от владельца по типам ботов (settings ui:<slug>)
         self.start_sem = asyncio.Semaphore(3)
         self.wake = asyncio.Event()
         self.closing = False
@@ -246,10 +247,22 @@ class Supervisor:
             "brand": self.cfg.brand,
             "expires_at": inst["expires_at"],
             "forever": bool(inst["forever"]),
+            "ui": self.ui.get(inst["product"], {}),
         }
         tmp = data_dir / "platform.json.tmp"
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
         tmp.replace(data_dir / "platform.json")
+
+    async def refresh_platform_files(self, product: str) -> int:
+        """Переписать platform.json всех копий типа product: боты подхватят изменения сами, без перезапуска."""
+        rows = await self.db.all("SELECT * FROM instances WHERE product = ? AND deleted_at IS NULL", product)
+        n = 0
+        for inst in rows:
+            data_dir = self.cfg.instances_dir / str(inst["id"])
+            if data_dir.exists():
+                self.write_platform_file(inst, data_dir)
+                n += 1
+        return n
 
     async def _start(self, proc: Proc, inst: Any) -> None:
         async with self.start_sem:

@@ -155,6 +155,43 @@ async def ready(bot) -> None:
          chat_id=bound_chat_id())
 
 
+# --- оформление от владельца платформы -----------------------------------------
+# Владелец Baksi Cloud задаёт в веб-админке тексты, кнопки (подпись, цвет, премиум-иконка) и раскладку
+# для всех ботов этого типа. Они приходят в platform.json → "ui" и применяются без перезапуска (кэш 5 с).
+# Собственные правки клиента в /admin бота важнее: настройки владельца - это значения по умолчанию.
+def ui() -> dict:
+    return platform().get("ui") or {}
+
+
+def ui_text(key: str, default: str) -> str:
+    value = (ui().get("texts") or {}).get(key)
+    return value if value else default
+
+
+def ui_button(key: str, default_text: str, default_style: str | None = None,
+              default_icon: str | None = None) -> tuple[str, str | None, str | None]:
+    """(подпись, цвет, премиум-иконка) с учётом настроек владельца."""
+    o = (ui().get("buttons") or {}).get(key) or {}
+    style = o.get("style", default_style)
+    return (o.get("text") or default_text, style if style in STYLES else None, o.get("icon") or default_icon)
+
+
+def ui_btn(key: str, default_text: str, cb: str | None = None, *, style: str | None = None,
+           icon: str | None = None, **kw):
+    text, st, ic = ui_button(key, default_text, style, icon)
+    return btn(text, cb, style=st, icon=ic, **kw)
+
+
+def ui_cols(key: str, default: int) -> int:
+    value = (ui().get("layout") or {}).get(key)
+    return int(value) if str(value) in ("1", "2", "3") else default
+
+
+def chunk(items: list, cols: int) -> list[list]:
+    items = [x for x in items if x]
+    return [items[i:i + cols] for i in range(0, len(items), max(1, cols))]
+
+
 # --- кнопки -------------------------------------------------------------------
 def btn(text: str, cb: str | None = None, url: str | None = None, style: str | None = None,
         icon: str | None = None, web_app: str | None = None, copy: str | None = None):

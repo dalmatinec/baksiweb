@@ -16,6 +16,7 @@ from .db import Database
 from .instances import Instances
 from .notify import Notifier
 from .supervisor import Supervisor
+from .hub.design import HubDesign
 
 
 @dataclass
@@ -32,7 +33,13 @@ class App:
     backups: Backups
     bot: Bot
     hub_username: str = ""
+    design: HubDesign = field(default_factory=HubDesign)
     started_at: float = field(default_factory=time.time)
+
+    async def load_design(self) -> None:
+        self.design.values = await self.db.get_setting("ui:hub", {}) or {}
+        for slug in self.catalog.modules:
+            self.sup.ui[slug] = await self.db.get_setting(f"ui:{slug}", {}) or {}
 
     def is_owner(self, user_id: int | None) -> bool:
         return user_id is not None and user_id in self.cfg.owner_ids

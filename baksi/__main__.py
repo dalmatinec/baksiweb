@@ -55,8 +55,10 @@ async def build(cfg: Config) -> App:
     sup.on_event = instances.on_event
     sup.on_problem = instances.on_problem
     pay = CryptoPay(cfg.cryptopay_token, cfg.cryptopay_testnet, db, billing, cfg.brand)
-    return App(cfg=cfg, db=db, vault=vault, catalog=catalog, billing=billing, sup=sup, instances=instances,
-               notifier=notifier, pay=pay, backups=Backups(cfg, db), bot=bot)
+    app = App(cfg=cfg, db=db, vault=vault, catalog=catalog, billing=billing, sup=sup, instances=instances,
+              notifier=notifier, pay=pay, backups=Backups(cfg, db), bot=bot)
+    await app.load_design()
+    return app
 
 
 async def run(cfg: Config) -> None:

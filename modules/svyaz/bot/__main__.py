@@ -112,7 +112,12 @@ class Svyaz:
         self.username = username
 
     def opt(self, key: str) -> Any:
-        return self.db.get(key, DEFAULTS[key])
+        """Своя настройка клиента → оформление от владельца платформы → значение по умолчанию."""
+        value = self.db.get(key)
+        if value is not None:
+            return value
+        default = DEFAULTS[key]
+        return kit.ui_text(key, default) if isinstance(default, str) else default
 
     def is_owner(self, uid: int) -> bool:
         return uid in kit.owner_ids()
@@ -142,11 +147,12 @@ class Svyaz:
                                  "WHERE m.chat_id = ? AND m.message_id = ?", chat_id, message_id)
 
     def card_kb(self, dialog_id: int, assigned: bool):
+        take = kit.ui_btn("sv_reply", "↩️ Ответить", f"sv:act:{dialog_id}", style="primary") if assigned else \
+            kit.ui_btn("sv_take", "🙋 Взять и ответить", f"sv:act:{dialog_id}", style="primary")
         return kit.kb([
-            [kit.btn("↩️ Ответить" if assigned else "🙋 Взять и ответить", f"sv:act:{dialog_id}", style="primary"),
-             kit.btn("🔀 Передать", f"sv:tr:{dialog_id}")],
-            [kit.btn("✅ Закрыть", f"sv:close:{dialog_id}", style="success"),
-             kit.btn("⛔️ Бан", f"sv:ban:{dialog_id}", style="danger")],
+            [take, kit.ui_btn("sv_transfer", "🔀 Передать", f"sv:tr:{dialog_id}")],
+            [kit.ui_btn("sv_close", "✅ Закрыть", f"sv:close:{dialog_id}", style="success"),
+             kit.ui_btn("sv_ban", "⛔️ Бан", f"sv:ban:{dialog_id}", style="danger")],
         ])
 
     async def client_line(self, client_id: int) -> str:
@@ -202,8 +208,8 @@ class Svyaz:
                                                       f"{await self.client_line(dialog['client_id'])}\n"
                                                       "Пишите в эту тему: всё уйдёт клиенту.",
                                                message_thread_id=topic,
-                                               reply_markup=kit.kb([[kit.btn("✅ Закрыть", f"sv:close:{dialog['id']}"),
-                                                                     kit.btn("⛔️ Бан", f"sv:ban:{dialog['id']}")]]))
+                                               reply_markup=kit.kb([[kit.ui_btn("sv_close", "✅ Закрыть", f"sv:close:{dialog['id']}", style="success"),
+                                                                     kit.ui_btn("sv_ban", "⛔️ Бан", f"sv:ban:{dialog['id']}", style="danger")]]))
             await self.map(group, card.message_id, dialog["id"])
         try:
             copy = await self.bot.copy_message(group, message.chat.id, message.message_id, message_thread_id=topic)
@@ -269,7 +275,7 @@ def not_command(message: Message) -> bool:
 
 async def dept_keyboard(sv: Svyaz):
     depts = await sv.departments()
-    return kit.kb([[kit.btn(d["title"], f"sv:dept:{d['id']}")] for d in depts])
+    return kit.kb(kit.chunk([kit.btn(d["title"], f"sv:dept:{d['id']}") for d in depts], kit.ui_cols("dept_cols", 1)))
 
 
 # --- клиент ---------------------------------------------------------------------

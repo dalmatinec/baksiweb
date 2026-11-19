@@ -37,5 +37,99 @@
     "180": 15000,
     "365": 27000,
     "0": 60000
+  },
+  "ui": {
+    "screens": [
+      {
+        "title": "Приветствие и выбор отдела",
+        "text": "greeting",
+        "layout": "dept_cols",
+        "buttons": [
+          "__dept__",
+          "__dept__",
+          "__dept__"
+        ],
+        "rows": []
+      },
+      {
+        "title": "После выбора отдела",
+        "text": "after_choose",
+        "rows": []
+      },
+      {
+        "title": "Новый диалог у исполнителя",
+        "text": null,
+        "rows": [
+          [
+            "sv_take",
+            "sv_transfer"
+          ],
+          [
+            "sv_close",
+            "sv_ban"
+          ]
+        ]
+      },
+      {
+        "title": "Диалог закрыт",
+        "text": "closed",
+        "rows": []
+      }
+    ],
+    "texts": [
+      {
+        "key": "greeting",
+        "label": "Приветствие",
+        "default": "👋 Здравствуйте! Здесь можно написать нам, даже если у вашего аккаунта ограничения на сообщения. Выберите, с кем хотите связаться:"
+      },
+      {
+        "key": "after_choose",
+        "label": "После выбора отдела",
+        "default": "Напишите сообщение, мы ответим здесь же."
+      },
+      {
+        "key": "closed",
+        "label": "Диалог закрыт",
+        "default": "Диалог закрыт. Если появятся вопросы, просто напишите снова."
+      }
+    ],
+    "buttons": [
+      {
+        "key": "sv_take",
+        "label": "Взять и ответить",
+        "default": "🙋 Взять и ответить",
+        "style": "primary"
+      },
+      {
+        "key": "sv_reply",
+        "label": "Ответить",
+        "default": "↩️ Ответить",
+        "style": "primary"
+      },
+      {
+        "key": "sv_transfer",
+        "label": "Передать",
+        "default": "🔀 Передать"
+      },
+      {
+        "key": "sv_close",
+        "label": "Закрыть",
+        "default": "✅ Закрыть",
+        "style": "success"
+      },
+      {
+        "key": "sv_ban",
+        "label": "Бан",
+        "default": "⛔️ Бан",
+        "style": "danger"
+      }
+    ],
+    "layout": [
+      {
+        "key": "dept_cols",
+        "label": "Отделов в ряд",
+        "default": 1
+      }
+    ]
   }
 }

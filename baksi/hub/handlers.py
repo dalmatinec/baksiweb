@@ -13,7 +13,7 @@ from urllib.parse import quote
 
 from aiogram import Bot, F, Router
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-from aiogram.filters import Command, CommandObject, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
@@ -75,20 +75,23 @@ async def main_menu(app: App, target: Message | CallbackQuery) -> None:
     user = await user_of(app, target)
     bots = await app.instances.for_user(user["id"])
     running = sum(1 for i in bots if i["status"] in ("running", "waiting_bind"))
-    text = (f"<b>{esc(app.cfg.brand)}</b>: боты для Telegram под ключ\n\n"
-            f"💰 Баланс: <b>{money(user['balance'])}</b>\n"
-            f"🤖 Ботов: <b>{len(bots)}</b>" + (f" · работают {running}" if bots else "") + "\n"
-            f"🆔 ID: <code>{user['id']}</code>")
+    d = app.design
+    text = d.text("main", бренд=esc(app.cfg.brand), баланс=money(user["balance"]),
+                  ботов=f"{len(bots)}" + (f" · работают {running}" if bots else ""), id=user["id"],
+                  имя=esc(user["first_name"] or ""))
     support = await app.db.get_setting("support_url", "")
-    rows = [[b("🛒 Каталог ботов", "cat", style="success")]]
+    rows = [[d.button("h_cat", "cat")]]
     if app.miniapp_url:
-        rows.append([b("✨ Открыть приложение", web_app=app.miniapp_url, style="primary")])
-    rows.append([b("🤖 Мои боты", "my"), b("💳 Кошелёк", "wallet")])
-    rows.append([b("🌐 Веб-кабинет", "web") if app.cfg.public_url else None, b("🎁 Рефералы", "ref")])
+        rows.append([d.button("h_app", web_app=app.miniapp_url)])
+    middle = [d.button("h_my", "my"), d.button("h_wallet", "wallet"),
+              d.button("h_web", "web") if app.cfg.public_url else None, d.button("h_ref", "ref")]
+    middle = [x for x in middle if x]
+    cols = d.cols("main_cols", 2)
+    rows += [middle[i:i + cols] for i in range(0, len(middle), cols)]
     if support:
-        rows.append([b("💬 Поддержка", url=support)])
+        rows.append([d.button("h_support", url=support)])
     if app.is_owner(user["id"]):
-        rows.append([b("⚙️ Админка", "adm")])
+        rows.append([d.button("h_admin", "adm")])
     await render(target, text, kb(*rows))
 
 
@@ -128,7 +131,7 @@ async def catalog(call: CallbackQuery, app: App) -> None:
     if not products:
         await render(call, "Каталог готовится: скоро здесь появятся боты.", kb([b("⬅️ Назад", "home")]))
         return
-    lines = ["<b>Каталог ботов</b>\nСвой бот на своём токене. Запуск за пару минут.\n"]
+    lines = [app.design.text("catalog") + "\n"]
     rows = []
     for p in products:
         price = f"{money(p['month_price'])} / месяц" if p["month_price"] else f"от {money(p['min_price'])}"
@@ -507,7 +510,7 @@ async def wallet(call: CallbackQuery, app: App, state: FSMContext) -> None:
     await state.set_state(None)
     user = await user_of(app, call)
     ops = await app.db.all("SELECT * FROM ledger WHERE user_id = ? ORDER BY id DESC LIMIT 6", user["id"])
-    lines = [f"<b>Кошелёк</b>\n\n💰 Баланс: <b>{money(user['balance'])}</b>"]
+    lines = [app.design.text("wallet", баланс=money(user["balance"]))]
     if ops:
         lines.append("\n<b>Последние операции</b>")
         lines += [f"{'+' if o['amount'] > 0 else ''}{money(o['amount'])} · {esc(o['note'])} · "
@@ -733,6 +736,34 @@ async def give(message: Message, command: CommandObject, app: App) -> None:
     await message.answer(f"Готово. Баланс клиента: {money(balance)}")
     if cents > 0:
         app.notifier.send(int(parts[0]), f"🎁 На ваш баланс зачислено {money(cents)}")
+
+
+def _custom_emoji(message: Message) -> list[tuple[str, str]]:
+    out = []
+    text = message.text or message.caption or ""
+    for e in (message.entities or message.caption_entities or []):
+        if e.type == "custom_emoji" and e.custom_emoji_id:
+            out.append((e.custom_emoji_id, e.extract_from(text)))
+    return out
+
+
+async def owner_sent_emoji(message: Message, app: App) -> bool:
+    return app.is_owner(message.from_user.id) and bool(_custom_emoji(message))
+
+
+@router.message(StateFilter(None), F.chat.type == "private", owner_sent_emoji)
+async def emoji_ids(message: Message) -> None:
+    """Владелец прислал премиум-эмодзи: отдаём их ID для раздела «Оформление» в веб-админке."""
+    lines, rows, seen = ["<b>ID премиум-эмодзи</b> (вставьте в «Оформление» → иконка кнопки):\n"], [], set()
+    for emoji_id, char in _custom_emoji(message):
+        if emoji_id in seen:
+            continue
+        seen.add(emoji_id)
+        tag = '<tg-emoji emoji-id="' + emoji_id + '">' + char + "</tg-emoji>"
+        lines.append(f"{esc(char)} <code>{emoji_id}</code>\nв текст: <code>{esc(tag)}</code>")
+        if len(rows) < 8:
+            rows.append([b(f"{char} Скопировать ID", copy=emoji_id)])
+    await message.answer("\n".join(lines), reply_markup=kb(*rows))
 
 
 @router.message(F.chat.type == "private")

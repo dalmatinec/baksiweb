@@ -31,6 +31,41 @@ CSP = ("default-src 'self'; script-src 'self' https://telegram.org; style-src 's
        "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org; base-uri 'none'; form-action 'self'")
 
 
+ALLOWED_TAGS = {"b", "strong", "i", "em", "u", "ins", "s", "strike", "del", "a", "code", "pre", "blockquote",
+                "tg-spoiler", "tg-emoji", "span"}
+
+
+def check_telegram_html(text: str) -> str | None:
+    """Грубая проверка HTML для Telegram: только разрешённые теги и все закрыты. None - всё хорошо."""
+    from html.parser import HTMLParser
+
+    class P(HTMLParser):
+        def __init__(self) -> None:
+            super().__init__(convert_charrefs=True)
+            self.stack: list[str] = []
+            self.error: str | None = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag not in ALLOWED_TAGS:
+                self.error = self.error or f"тег <{tag}> Telegram не поддерживает"
+            self.stack.append(tag)
+
+        def handle_endtag(self, tag):
+            if not self.stack or self.stack[-1] != tag:
+                self.error = self.error or f"лишний или незакрытый тег </{tag}>"
+            else:
+                self.stack.pop()
+
+    parser = P()
+    parser.feed(text)
+    parser.close()
+    if parser.error:
+        return parser.error
+    if parser.stack:
+        return f"не закрыт тег <{parser.stack[-1]}>"
+    return None
+
+
 def client_ip(request: Request) -> str:
     return request.client.host if request.client else "?"
 
@@ -597,6 +632,79 @@ def create_web(app: App) -> FastAPI:
             await app.db.set_setting(key, value)
         await app.db.audit(admin["id"], "settings", "", json.dumps(body, ensure_ascii=False))
         return {"ok": True}
+
+    # --- оформление ботов -----------------------------------------------------
+    def design_targets() -> list[dict]:
+        from ..hub.design import HUB_UI
+        out = [{"slug": "hub", "title": f"Хаб-бот @{app.hub_username}" if app.hub_username else "Хаб-бот",
+                "note": "Твой главный бот. Премиум-эмодзи работают, если у тебя есть Telegram Premium.",
+                "schema": HUB_UI}]
+        for m in sorted(app.catalog.modules.values(), key=lambda x: x.sort):
+            if m.ui_schema:
+                out.append({"slug": m.slug, "title": m.title, "color": m.color,
+                            "note": "Применяется у всех клиентов за несколько секунд. Если клиент сам поменял текст "
+                                    "или кнопку в своём /admin, у него останется его вариант. Премиум-иконки видны, "
+                                    "если Premium есть у владельца бота (клиента).",
+                            "schema": m.ui_schema})
+        return out
+
+    @web.get("/api/admin/design")
+    async def admin_design(_=Depends(owner_user)):
+        items = []
+        for t in design_targets():
+            items.append(t | {"values": await app.db.get_setting(f"ui:{t['slug']}", {}) or {}})
+        return {"items": items}
+
+    @web.post("/api/admin/design/{slug}")
+    async def admin_design_save(slug: str, body: dict = Body(...), admin=Depends(owner_user)):
+        target = next((t for t in design_targets() if t["slug"] == slug), None)
+        if not target:
+            raise HTTPException(404, "Нет такого бота")
+        schema = target["schema"]
+        text_keys = {t["key"] for t in schema.get("texts", [])}
+        button_keys = {x["key"] for x in schema.get("buttons", [])}
+        layout_keys = {x["key"] for x in schema.get("layout", [])}
+        texts, buttons, layout = {}, {}, {}
+        for key, value in (body.get("texts") or {}).items():
+            if key not in text_keys:
+                raise HTTPException(400, f"Неизвестный текст {key}")
+            value = str(value or "").strip()
+            if value:
+                if len(value) > 3500:
+                    raise HTTPException(400, "Текст длиннее 3500 символов")
+                err = check_telegram_html(value)
+                if err:
+                    raise HTTPException(400, f"Текст «{key}»: {err}")
+                texts[key] = value
+        for key, value in (body.get("buttons") or {}).items():
+            if key not in button_keys or not isinstance(value, dict):
+                raise HTTPException(400, f"Неизвестная кнопка {key}")
+            item = {}
+            if str(value.get("text") or "").strip():
+                item["text"] = str(value["text"]).strip()[:64]
+            if value.get("style") in ("primary", "success", "danger", ""):
+                item["style"] = value["style"] or None
+            icon = str(value.get("icon") or "").strip()
+            if icon:
+                if not icon.isdigit() or len(icon) > 32:
+                    raise HTTPException(400, "ID премиум-эмодзи - это число. Пришлите эмодзи хаб-боту, он покажет ID")
+                item["icon"] = icon
+            if item:
+                buttons[key] = item
+        for key, value in (body.get("layout") or {}).items():
+            if key not in layout_keys:
+                raise HTTPException(400, f"Неизвестная раскладка {key}")
+            if str(value) in ("1", "2", "3"):
+                layout[key] = int(value)
+        values = {"texts": texts, "buttons": buttons, "layout": layout}
+        await app.db.set_setting(f"ui:{slug}", values)
+        await app.db.audit(admin["id"], "design", slug)
+        if slug == "hub":
+            app.design.values = values
+            return {"ok": True, "applied": 1}
+        app.sup.ui[slug] = values
+        n = await app.sup.refresh_platform_files(slug)
+        return {"ok": True, "applied": n}
 
     @web.get("/api/admin/backups")
     async def admin_backups(_=Depends(owner_user)):

@@ -4,19 +4,32 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from typing import List, Dict, Any
 from config import INTERVALS
 
+try:  # оформление от владельца платформы Baksi Cloud
+    import baksi_kit as _kit
+except ImportError:
+    _kit = None
+
+
+def _ui(builder: InlineKeyboardBuilder, key: str, text: str, callback_data: str, style: str | None = None) -> None:
+    if _kit is not None:
+        text, style, icon = _kit.ui_button(key, text, style)
+        builder.button(text=text, callback_data=callback_data, style=style, icon_custom_emoji_id=icon)
+    else:
+        builder.button(text=text, callback_data=callback_data)
+
 
 def get_start_keyboard() -> InlineKeyboardMarkup:
     """Клавиатура для стартового сообщения"""
     builder = InlineKeyboardBuilder()
-    builder.button(text="📊 Статистика", callback_data="stats")
+    _ui(builder, "r_stats", "📊 Статистика", "stats")
     return builder.as_markup()
 
 
 def get_admin_main_keyboard() -> InlineKeyboardMarkup:
     """Главная клавиатура админа в группе"""
     builder = InlineKeyboardBuilder()
-    builder.button(text="📋 Список рассылок", callback_data="list_posts")
-    builder.button(text="➕ Создать рассылку", callback_data="create_post")
+    _ui(builder, "r_list", "📋 Список рассылок", "list_posts")
+    _ui(builder, "r_create", "➕ Создать рассылку", "create_post", "success")
     builder.adjust(1)
     return builder.as_markup()
 

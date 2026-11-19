@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 from dataclasses import dataclass, field
 
 from aiogram import Bot
@@ -34,6 +35,7 @@ class App:
     bot: Bot
     hub_username: str = ""
     design: HubDesign = field(default_factory=HubDesign)
+    accounts: Any = None  # baksi.accounts.Accounts
     started_at: float = field(default_factory=time.time)
 
     async def load_design(self) -> None:

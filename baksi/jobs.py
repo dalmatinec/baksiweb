@@ -155,6 +155,17 @@ async def health_loop(app: App) -> None:
             log.exception("Ошибка проверки здоровья")
 
 
+async def accounts_loop(app: App) -> None:
+    """Переносы аккаунтов, у которых прошли 24 часа ожидания."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await app.accounts.execute_due()
+            await app.accounts.nudge()
+        except Exception:
+            log.exception("Ошибка переноса аккаунтов")
+
+
 def start_jobs(app: App) -> list[asyncio.Task]:
     return [asyncio.create_task(coro(app), name=coro.__name__)
-            for coro in (payments_loop, billing_loop, cleanup_loop, backup_loop, health_loop)]
+            for coro in (payments_loop, billing_loop, cleanup_loop, backup_loop, health_loop, accounts_loop)]

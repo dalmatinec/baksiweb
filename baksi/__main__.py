@@ -58,6 +58,9 @@ async def build(cfg: Config) -> App:
     app = App(cfg=cfg, db=db, vault=vault, catalog=catalog, billing=billing, sup=sup, instances=instances,
               notifier=notifier, pay=pay, backups=Backups(cfg, db), bot=bot)
     await app.load_design()
+    from .accounts import Accounts
+    app.accounts = Accounts(app)
+    await app.accounts.migrate()
     return app
 
 
@@ -73,6 +76,8 @@ async def run(cfg: Config) -> None:
     guard = Guard(app)
     dp.message.outer_middleware(guard)
     dp.callback_query.outer_middleware(guard)
+    from .hub.security import router as security_router
+    dp.include_router(security_router)  # раньше основного: /recover и ввод ключа важнее общих обработчиков
     dp.include_router(hub_router)
 
     @dp.errors()

@@ -40,6 +40,9 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.dp.message.outer_middleware(guard)
         self.dp.callback_query.outer_middleware(guard)
         router._parent_router = None  # роутер модульный: подключаем к новому диспетчеру в каждом тесте
+        from baksi.hub.security import router as security_router
+        security_router._parent_router = None
+        self.dp.include_router(security_router)
         self.dp.include_router(router)
 
     async def asyncTearDown(self):

@@ -13,7 +13,7 @@ from .ui import b
 HUB_UI: dict[str, Any] = {
     "screens": [
         {"title": "Главное меню", "text": "main", "layout": "main_cols",
-         "buttons": ["h_my", "h_wallet", "h_web", "h_ref"], "rows_before": [["h_cat"], ["h_app"]],
+         "buttons": ["h_my", "h_wallet", "h_web", "h_ref", "h_sec"], "rows_before": [["h_cat"], ["h_app"]],
          "rows": [["h_support"], ["h_admin"]]},
         {"title": "Каталог", "text": "catalog", "rows": []},
         {"title": "Кошелёк", "text": "wallet", "rows": []},
@@ -35,6 +35,7 @@ HUB_UI: dict[str, Any] = {
         {"key": "h_wallet", "label": "Кошелёк", "default": "💳 Кошелёк"},
         {"key": "h_web", "label": "Веб-кабинет", "default": "🌐 Веб-кабинет"},
         {"key": "h_ref", "label": "Рефералы", "default": "🎁 Рефералы"},
+        {"key": "h_sec", "label": "Безопасность аккаунта", "default": "🔐 Безопасность"},
         {"key": "h_support", "label": "Поддержка", "default": "💬 Поддержка"},
         {"key": "h_admin", "label": "Админка (видишь только ты)", "default": "⚙️ Админка"},
         {"key": "h_back", "label": "Назад", "default": "⬅️ Назад"},

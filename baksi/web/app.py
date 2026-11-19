@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .. import design
 from ..app import App
+from ..accounts import AccountError
 from ..billing import BillingError, InsufficientFunds, money
 from ..catalog import plan_label
 from ..cryptopay import PaymentError
@@ -151,6 +152,45 @@ def create_web(app: App) -> FastAPI:
         set_cookie(resp, token)
         return resp
 
+    # --- логин и пароль --------------------------------------------------------------
+    def logged_in(request: Request, token: str, payload: dict | None = None) -> JSONResponse:
+        resp = JSONResponse({"ok": True, "token": token, **(payload or {})})
+        set_cookie(resp, token)
+        return resp
+
+    @web.post("/api/auth/login")
+    async def auth_login(request: Request, body: dict = Body(...)):
+        limiter.check(client_ip(request), "login", 10, 60)
+        try:
+            uid = await app.accounts.login(str(body.get("login", "")), str(body.get("password", "")))
+        except AccountError as exc:
+            raise bad(exc, 401)
+        user = await app.db.one("SELECT banned FROM users WHERE id = ?", uid)
+        if user and user["banned"] and not app.is_owner(uid):
+            raise HTTPException(403, "Доступ ограничен")
+        return logged_in(request, await create_session(app, uid, request.headers.get("user-agent", "")))
+
+    @web.post("/api/auth/signup")
+    async def auth_signup(request: Request, body: dict = Body(...)):
+        limiter.check(client_ip(request), "signup", 6, 600)
+        if str(body.get("password", "")) != str(body.get("password2", body.get("password", ""))):
+            raise HTTPException(400, "Пароли не совпадают")
+        try:
+            token, link = await app.accounts.signup_start(str(body.get("login", "")), str(body.get("password", "")))
+        except AccountError as exc:
+            raise bad(exc)
+        return {"token": token, "link": link}
+
+    @web.get("/api/auth/signup/{token}")
+    async def auth_signup_status(token: str, request: Request):
+        limiter.check(client_ip(request), "signup_poll", 60, 60)
+        uid = await app.accounts.signup_status(token)
+        if not uid:
+            if not await app.accounts.get_token("su", token):
+                raise HTTPException(410, "Время на подтверждение вышло. Начните регистрацию заново.")
+            return {"pending": True}
+        return logged_in(request, await create_session(app, uid, request.headers.get("user-agent", "")))
+
     @web.post("/api/auth/logout")
     async def logout(request: Request):
         token = session_token(request)
@@ -192,7 +232,55 @@ def create_web(app: App) -> FastAPI:
     @web.get("/api/me")
     async def me(user=Depends(current_user)):
         bots = await app.instances.for_user(user["id"])
-        return {"user": user_view(user), "bots": [app.instances.view(b) for b in bots]}
+        return {"user": user_view(user), "bots": [app.instances.view(b) for b in bots],
+                "security": await app.accounts.security(user["id"])}
+
+    # --- безопасность аккаунта ----------------------------------------------------------
+    @web.get("/api/security")
+    async def security_info(user=Depends(current_user)):
+        return await app.accounts.security(user["id"])
+
+    @web.post("/api/security/password")
+    async def security_password(request: Request, body: dict = Body(...), user=Depends(current_user)):
+        limiter.check(client_ip(request), "password", 10, 600)
+        if str(body.get("password", "")) != str(body.get("password2", "")):
+            raise HTTPException(400, "Пароли не совпадают")
+        try:
+            login = await app.accounts.set_password(user["id"], str(body.get("login") or "") or None,
+                                                    str(body.get("password", "")))
+        except AccountError as exc:
+            raise bad(exc)
+        return {"ok": True, "login": login}
+
+    @web.post("/api/security/key")
+    async def security_key(user=Depends(current_user)):
+        return {"key": await app.accounts.issue_recovery_key(user["id"])}
+
+    @web.post("/api/security/reserve")
+    async def security_reserve(user=Depends(current_user)):
+        return {"link": await app.accounts.reserve_link(user["id"])}
+
+    @web.post("/api/security/reserve/remove")
+    async def security_reserve_remove(user=Depends(current_user)):
+        await app.accounts.remove_reserve(user["id"])
+        return {"ok": True}
+
+    @web.post("/api/security/move")
+    async def security_move(user=Depends(current_user)):
+        """Ссылка для переноса аккаунта на другой Telegram: открыть её с нового аккаунта."""
+        token = await app.accounts.new_token("mv", user["id"])
+        return {"link": app.accounts.deep_link("mv", token)}
+
+    @web.post("/api/security/cancel-transfer")
+    async def security_cancel(user=Depends(current_user)):
+        row = await app.accounts.pending_transfer(user["id"])
+        if not row:
+            raise HTTPException(404, "Переноса нет")
+        try:
+            await app.accounts.cancel_transfer(row["id"], user["id"])
+        except AccountError as exc:
+            raise bad(exc)
+        return {"ok": True}
 
     @web.post("/api/quote")
     async def quote(body: dict = Body(...), user=Depends(current_user)):
@@ -471,8 +559,11 @@ def create_web(app: App) -> FastAPI:
             raise HTTPException(404, "Клиент не найден")
         bots = await app.db.all("SELECT * FROM instances WHERE user_id = ? AND deleted_at IS NULL", user_id)
         ledger = await app.db.all("SELECT * FROM ledger WHERE user_id = ? ORDER BY id DESC LIMIT 100", user_id)
+        transfers = await app.db.all("SELECT * FROM transfers WHERE old_id = ? OR new_id = ? ORDER BY id DESC "
+                                     "LIMIT 10", user_id, user_id)
         return {"user": dict(row), "bots": [app.instances.view(b) for b in bots],
-                "ledger": [dict(x) for x in ledger]}
+                "ledger": [dict(x) for x in ledger], "security": await app.accounts.security(user_id),
+                "transfers": [dict(t) for t in transfers]}
 
     @web.post("/api/admin/users/{user_id}")
     async def admin_user_action(user_id: int, body: dict = Body(...), admin=Depends(owner_user)):
@@ -484,6 +575,17 @@ def create_web(app: App) -> FastAPI:
                 if int(body.get("amount", 0)) > 0 and body.get("notify", True):
                     app.notifier.send(user_id, f"🎁 На ваш баланс зачислено {money(int(body['amount']))}")
                 return {"ok": True, "balance": balance}
+            if action == "transfer":  # ручной перенос на новый Telegram после проверки человека
+                new_id = int(body.get("new_id", 0))
+                if new_id <= 0:
+                    raise HTTPException(400, "Укажите новый Telegram ID")
+                await app.accounts.transfer_now(user_id, new_id, admin["id"])
+                return {"ok": True, "new_id": new_id}
+            if action == "cancel_transfer":
+                row = await app.accounts.pending_transfer(user_id)
+                if row:
+                    await app.accounts.cancel_transfer(row["id"], admin["id"])
+                return {"ok": True}
             if action in ("ban", "unban"):
                 await app.db.run("UPDATE users SET banned = ? WHERE id = ?", int(action == "ban"), user_id)
                 if action == "ban":
@@ -496,7 +598,7 @@ def create_web(app: App) -> FastAPI:
                 await app.db.audit(admin["id"], action, f"user:{user_id}")
                 app.sup.poke()
                 return {"ok": True}
-        except (BillingError, ValueError) as exc:
+        except (BillingError, AccountError, ValueError) as exc:
             raise bad(exc)
         raise HTTPException(400, "Неизвестное действие")
 

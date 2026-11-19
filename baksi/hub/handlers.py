@@ -86,7 +86,8 @@ async def main_menu(app: App, target: Message | CallbackQuery) -> None:
     if app.miniapp_url:
         rows.append([d.button("h_app", web_app=app.miniapp_url)])
     middle = [d.button("h_my", "my"), d.button("h_wallet", "wallet"),
-              d.button("h_web", "web") if app.cfg.public_url else None, d.button("h_ref", "ref")]
+              d.button("h_web", "web") if app.cfg.public_url else None, d.button("h_ref", "ref"),
+              d.button("h_sec", "sec")]
     middle = [x for x in middle if x]
     cols = d.cols("main_cols", 2)
     rows += [middle[i:i + cols] for i in range(0, len(middle), cols)]
@@ -108,6 +109,10 @@ async def start(message: Message, command: CommandObject, app: App, state: FSMCo
         return
     if arg == "login":
         await web_login(message, app)
+        return
+    if arg[:3] in ("su_", "rs_", "mv_"):
+        from .security import account_link
+        await account_link(message, app, arg[:2], arg[3:])
         return
     if arg.startswith("b") and app.catalog.get(arg[1:]):
         await product_card(message, app, arg[1:])

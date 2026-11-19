@@ -1,10 +1,13 @@
-"""Связь: бот-посредник для людей со спам-блоком.
+"""Связь: переписка клиента с операторами через бота (для тех, у кого спам-блок).
 
-Клиент пишет боту → выбирает отдел (например, «Продажи» или «Заказы») → переписывается с исполнителем
-прямо через бота. Два режима:
-- «личка»: сообщения приходят исполнителям отдела в личку от бота, исполнитель жмёт «Ответить» и просто пишет;
-- «темы»: бот в группе с темами, на каждого клиента своя тема, отвечает любой исполнитель в теме.
-Исполнители добавляются по ссылке-приглашению в отдел (без поиска ID).
+- Сообщения клиента получают ТОЛЬКО операторы, добавленные владельцем бота в /admin (по ссылке-приглашению).
+  Владелец бота сам по себе оператором не является: хочет отвечать - добавляет себя той же ссылкой.
+- Операторы видят всё о клиенте: имя, @username, ID, ссылку на профиль. Клиент видит только текст ответа,
+  кто ответил - не видит.
+- Ответил один оператор - остальные операторы получают его ответ с пометкой «✅ Имя ответил в 15:42».
+- Нет операторов - бот напоминает владельцу их добавить. Обращения сохраняются: оператор увидит историю.
+- Отделы необязательны: если их два и больше, клиент выбирает отдел, и обращение получают операторы отдела.
+- Режим «темы»: бот в группе с темами, на каждого клиента своя тема, отвечает любой участник группы.
 """
 from __future__ import annotations
 
@@ -19,12 +22,12 @@ from typing import Any
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, ReactionTypeEmoji
 
 import baksi_kit as kit
 from baksi_db import ModuleDB
@@ -50,7 +53,7 @@ MIGRATIONS = [
         username   TEXT,
         first_name TEXT,
         banned     INTEGER NOT NULL DEFAULT 0,
-        current    INTEGER,                 -- текущий диалог
+        current    INTEGER,
         created_at INTEGER NOT NULL
     );
     CREATE TABLE dialogs (
@@ -58,12 +61,12 @@ MIGRATIONS = [
         client_id   INTEGER NOT NULL,
         dept_id     INTEGER,
         staff_id    INTEGER,
-        status      TEXT NOT NULL DEFAULT 'new',   -- new|active|closed
+        status      TEXT NOT NULL DEFAULT 'new',
         topic_id    INTEGER,
         created_at  INTEGER NOT NULL,
         last_at     INTEGER NOT NULL,
         first_reply INTEGER,
-        last_staff  INTEGER,                       -- кто писал клиенту последним (для подписи)
+        last_staff  INTEGER,
         closed_at   INTEGER
     );
     CREATE INDEX dialogs_client ON dialogs(client_id, status);
@@ -85,16 +88,38 @@ MIGRATIONS = [
         created_at INTEGER NOT NULL
     );
     """,
+    """
+    CREATE TABLE operators (
+        user_id   INTEGER PRIMARY KEY,
+        name      TEXT NOT NULL,
+        username  TEXT,
+        added_at  INTEGER NOT NULL
+    );
+    INSERT OR IGNORE INTO operators(user_id, name, added_at)
+        SELECT user_id, MIN(name), MIN(added_at) FROM staff GROUP BY user_id;
+    CREATE TABLE history (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        dialog_id   INTEGER NOT NULL,
+        side        TEXT NOT NULL,
+        chat_id     INTEGER NOT NULL,
+        message_id  INTEGER NOT NULL,
+        operator_id INTEGER,
+        created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX history_dialog ON history(dialog_id, id);
+    """,
 ]
 
 DEFAULTS = {
     "greeting": "👋 Здравствуйте! Здесь можно написать нам, даже если у вашего аккаунта ограничения на сообщения. "
-                "Выберите, с кем хотите связаться:",
+                "Просто напишите, что вас интересует.",
     "after_choose": "Напишите сообщение, мы ответим здесь же.",
+    "received": "✅ Сообщение получено, ответим здесь.",
     "closed": "Диалог закрыт. Если появятся вопросы, просто напишите снова.",
-    "show_names": True,      # показывать клиенту имя исполнителя
     "mode": "personal",      # personal | topics
 }
+NO_OPERATORS_REMIND = 1800   # напоминать владельцу про операторов не чаще раза в 30 минут
+HISTORY_LIMIT = 30
 
 
 def now() -> int:
@@ -103,6 +128,10 @@ def now() -> int:
 
 def esc(text: Any) -> str:
     return html.escape(str(text or ""))
+
+
+def hhmm(ts: int | None = None) -> str:
+    return time.strftime("%H:%M", time.localtime(ts or now()))
 
 
 class Svyaz:
@@ -128,21 +157,28 @@ class Svyaz:
     def is_owner(self, uid: int) -> bool:
         return uid in kit.owner_ids()
 
-    async def is_staff(self, uid: int) -> bool:
-        return bool(await self.db.one("SELECT 1 FROM staff WHERE user_id = ?", uid))
+    async def is_operator(self, uid: int) -> bool:
+        return bool(await self.db.one("SELECT 1 FROM operators WHERE user_id = ?", uid))
+
+    async def operators(self) -> list[Any]:
+        return await self.db.all("SELECT * FROM operators ORDER BY added_at")
 
     async def departments(self) -> list[Any]:
         return await self.db.all("SELECT * FROM departments ORDER BY position, id")
 
-    async def dept_staff(self, dept_id: int | None) -> list[Any]:
-        if dept_id is None:
-            return await self.db.all("SELECT user_id, MIN(name) AS name FROM staff GROUP BY user_id")
-        return await self.db.all("SELECT user_id, name FROM staff WHERE dept_id = ?", dept_id)
-
     async def dept_title(self, dept_id: int | None) -> str:
-        if dept_id is None:
-            return "Поддержка"
-        return await self.db.value("SELECT title FROM departments WHERE id = ?", dept_id, default="Отдел")
+        if not dept_id:
+            return ""
+        return await self.db.value("SELECT title FROM departments WHERE id = ?", dept_id, default="")
+
+    async def audience(self, dialog: Any) -> list[int]:
+        """Кто получает обращение: операторы отдела, а если отдела нет или в нём никого - все операторы."""
+        if dialog["dept_id"]:
+            rows = await self.db.all("SELECT s.user_id FROM staff s JOIN operators o ON o.user_id = s.user_id "
+                                     "WHERE s.dept_id = ?", dialog["dept_id"])
+            if rows:
+                return [r["user_id"] for r in rows]
+        return [r["user_id"] for r in await self.operators()]
 
     async def map(self, chat_id: int, message_id: int, dialog_id: int) -> None:
         await self.db.run("INSERT OR REPLACE INTO msgmap(chat_id, message_id, dialog_id, created_at) "
@@ -152,70 +188,103 @@ class Svyaz:
         return await self.db.one("SELECT d.* FROM msgmap m JOIN dialogs d ON d.id = m.dialog_id "
                                  "WHERE m.chat_id = ? AND m.message_id = ?", chat_id, message_id)
 
-    def card_kb(self, dialog_id: int, assigned: bool):
-        take = kit.ui_btn("sv_reply", "↩️ Ответить", f"sv:act:{dialog_id}", style="primary") if assigned else \
-            kit.ui_btn("sv_take", "🙋 Взять и ответить", f"sv:act:{dialog_id}", style="primary")
-        return kit.kb([
-            [take, kit.ui_btn("sv_transfer", "🔀 Передать", f"sv:tr:{dialog_id}")],
-            [kit.ui_btn("sv_close", "✅ Закрыть", f"sv:close:{dialog_id}", style="success"),
-             kit.ui_btn("sv_ban", "⛔️ Бан", f"sv:ban:{dialog_id}", style="danger")],
-        ])
+    async def remember(self, dialog_id: int, side: str, chat_id: int, message_id: int,
+                       operator_id: int | None = None) -> None:
+        await self.db.run("INSERT INTO history(dialog_id, side, chat_id, message_id, operator_id, created_at) "
+                          "VALUES (?, ?, ?, ?, ?, ?)", dialog_id, side, chat_id, message_id, operator_id, now())
 
-    async def client_line(self, client_id: int) -> str:
+    async def client_card(self, client_id: int) -> str:
         c = await self.db.one("SELECT * FROM clients WHERE id = ?", client_id)
-        if not c:
-            return f"ID {client_id}"
-        name = esc(c["first_name"] or "Без имени")
-        return f"{name}" + (f" @{esc(c['username'])}" if c["username"] else "") + f" · <code>{client_id}</code>"
+        name = esc((c["first_name"] if c else None) or "Без имени")
+        parts = [f'👤 <a href="tg://user?id={client_id}">{name}</a>']
+        if c and c["username"]:
+            parts.append(f"@{esc(c['username'])}")
+        parts.append(f"ID <code>{client_id}</code>")
+        return " · ".join(parts)
 
-    # --- доставка сообщения клиента исполнителям ---------------------------------
-    async def deliver_from_client(self, dialog: Any, message: Message) -> bool:
-        title = await self.dept_title(dialog["dept_id"])
-        if self.opt("mode") == "topics" and kit.bound_chat_id():
-            return await self._to_topic(dialog, message, title)
-        targets = [dialog["staff_id"]] if dialog["staff_id"] else [s["user_id"] for s in
-                                                                  await self.dept_staff(dialog["dept_id"])]
-        if not targets:
-            targets = sorted(kit.owner_ids())
-        delivered = False
-        fresh = dialog["status"] == "new" and await self.db.value(
-            "SELECT COUNT(*) FROM msgmap WHERE dialog_id = ?", dialog["id"], default=0) == 0
-        for uid in targets:
+    def reply_kb(self, dialog_id: int):
+        return kit.kb([[kit.ui_btn("sv_reply", "↩️ Ответить", f"sv:act:{dialog_id}", style="primary")]])
+
+    async def card_kb(self, dialog_id: int):
+        rows = [[kit.ui_btn("sv_reply", "↩️ Ответить", f"sv:act:{dialog_id}", style="primary"),
+                 kit.ui_btn("sv_history", "📜 История", f"sv:hist:{dialog_id}")],
+                [kit.ui_btn("sv_close", "✅ Закрыть", f"sv:close:{dialog_id}", style="success"),
+                 kit.ui_btn("sv_ban", "⛔️ Бан", f"sv:ban:{dialog_id}", style="danger")]]
+        if len(await self.departments()) > 1:
+            rows.append([kit.ui_btn("sv_transfer", "🔀 Передать", f"sv:tr:{dialog_id}")])
+        return kit.kb(rows)
+
+    async def send_safe(self, make):
+        """Одна отправка: заблокировавший бота оператор не должен ломать доставку остальным."""
+        for _ in range(2):
             try:
-                if fresh:
-                    card = await self.bot.send_message(
-                        uid, f"📩 Новый диалог #{dialog['id']} · {esc(title)}\n{await self.client_line(dialog['client_id'])}",
-                        reply_markup=self.card_kb(dialog["id"], bool(dialog["staff_id"])))
-                    await self.map(uid, card.message_id, dialog["id"])
-                copy = await self.bot.copy_message(uid, message.chat.id, message.message_id,
-                                                   reply_markup=kit.kb([[kit.btn(f"↩️ Ответить #{dialog['id']}",
-                                                                                 f"sv:act:{dialog['id']}")]]))
-                await self.map(uid, copy.message_id, dialog["id"])
-                delivered = True
+                return await make()
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after + 0.5)
             except (TelegramForbiddenError, TelegramBadRequest) as exc:
-                log.info("Исполнителю %s не доставлено: %s", uid, exc)
+                log.info("Не доставлено: %s", exc)
+                return None
+        return None
+
+    # --- нет операторов -----------------------------------------------------------
+    async def remind_no_operators(self) -> None:
+        if now() - int(self.db.get("no_ops_reminded", 0) or 0) < NO_OPERATORS_REMIND:
+            return
+        await self.db.set("no_ops_reminded", now())
+        waiting = await self.db.value("SELECT COUNT(*) FROM dialogs WHERE status != 'closed'", default=0)
+        text = (f"⚠️ Связь @{self.username}: нет операторов, обращения никто не видит (ждут ответа: {waiting}).\n"
+                "Откройте бота → /admin → 👥 Операторы и отправьте ссылку-приглашение тем, кто будет отвечать. "
+                "Себя можно добавить той же ссылкой.")
+        kit.notify(text)
+        for oid in kit.owner_ids():  # и в самом боте, если владелец его уже открывал
+            await self.send_safe(lambda oid=oid: self.bot.send_message(oid, text))
+
+    # --- доставка сообщения клиента -----------------------------------------------
+    async def deliver_from_client(self, dialog: Any, message: Message, fresh: bool) -> int:
+        """Возвращает, скольким операторам доставлено."""
+        if self.opt("mode") == "topics" and kit.bound_chat_id():
+            return 1 if await self._to_topic(dialog, message) else 0
+        targets = await self.audience(dialog)
+        if not targets:
+            await self.remind_no_operators()
+            return 0
+        dept = await self.dept_title(dialog["dept_id"])
+        card_text = (f"📩 <b>Новое обращение #{dialog['id']}</b>" + (f" · {esc(dept)}" if dept else "")
+                     + f"\n{await self.client_card(dialog['client_id'])}")
+        card_kb = await self.card_kb(dialog["id"])
+        delivered = 0
+        for uid in targets:
+            if fresh:
+                card = await self.send_safe(lambda uid=uid: self.bot.send_message(uid, card_text, reply_markup=card_kb))
+                if card:
+                    await self.map(uid, card.message_id, dialog["id"])
+            copy = await self.send_safe(lambda uid=uid: self.bot.copy_message(
+                uid, message.chat.id, message.message_id, reply_markup=self.reply_kb(dialog["id"])))
+            if copy:
+                await self.map(uid, copy.message_id, dialog["id"])
+                delivered += 1
         return delivered
 
-    async def _to_topic(self, dialog: Any, message: Message, title: str) -> bool:
+    async def _to_topic(self, dialog: Any, message: Message) -> bool:
         group = kit.bound_chat_id()
         topic = dialog["topic_id"]
         if not topic:
             c = await self.db.one("SELECT * FROM clients WHERE id = ?", dialog["client_id"])
             name = (c["first_name"] if c else None) or str(dialog["client_id"])
+            dept = await self.dept_title(dialog["dept_id"])
             try:
-                created = await self.bot.create_forum_topic(group, f"{name[:80]} · {title[:40]}")
+                created = await self.bot.create_forum_topic(group, name[:80] + (f" · {dept[:40]}" if dept else ""))
             except TelegramBadRequest as exc:
                 kit.notify(f"⚠️ Не получилось создать тему в группе ({exc.message}). Проверьте, что в группе "
                            "включены темы и у бота есть право управлять ими.")
                 return False
             topic = created.message_thread_id
             await self.db.run("UPDATE dialogs SET topic_id = ? WHERE id = ?", topic, dialog["id"])
-            card = await self.bot.send_message(group, f"📩 Диалог #{dialog['id']} · {esc(title)}\n"
-                                                      f"{await self.client_line(dialog['client_id'])}\n"
-                                                      "Пишите в эту тему: всё уйдёт клиенту.",
-                                               message_thread_id=topic,
-                                               reply_markup=kit.kb([[kit.ui_btn("sv_close", "✅ Закрыть", f"sv:close:{dialog['id']}", style="success"),
-                                                                     kit.ui_btn("sv_ban", "⛔️ Бан", f"sv:ban:{dialog['id']}", style="danger")]]))
+            card = await self.bot.send_message(
+                group, f"📩 <b>Обращение #{dialog['id']}</b>\n{await self.client_card(dialog['client_id'])}\n"
+                       "Пишите в эту тему: всё уйдёт клиенту.", message_thread_id=topic,
+                reply_markup=kit.kb([[kit.ui_btn("sv_close", "✅ Закрыть", f"sv:close:{dialog['id']}", style="success"),
+                                      kit.ui_btn("sv_ban", "⛔️ Бан", f"sv:ban:{dialog['id']}", style="danger")]]))
             await self.map(group, card.message_id, dialog["id"])
         try:
             copy = await self.bot.copy_message(group, message.chat.id, message.message_id, message_thread_id=topic)
@@ -225,41 +294,56 @@ class Svyaz:
         await self.map(group, copy.message_id, dialog["id"])
         return True
 
-    # --- ответ исполнителя клиенту -----------------------------------------------
-    async def deliver_to_client(self, dialog: Any, message: Message, staff_id: int, staff_name: str) -> str | None:
+    # --- ответ оператора ------------------------------------------------------------
+    async def deliver_to_client(self, dialog: Any, message: Message, operator_id: int, name: str,
+                                mirror: bool = True) -> str | None:
         if dialog["status"] == "closed":
-            return "Диалог закрыт. Клиент может написать снова, тогда откроется новый."
-        banned = await self.db.value("SELECT banned FROM clients WHERE id = ?", dialog["client_id"], default=0)
-        if banned:
+            return "Обращение закрыто. Клиент может написать снова, тогда откроется новое."
+        if await self.db.value("SELECT banned FROM clients WHERE id = ?", dialog["client_id"], default=0):
             return "Клиент заблокирован."
-        try:
-            if self.opt("show_names") and dialog["last_staff"] != staff_id:
-                dept = await self.dept_title(dialog["dept_id"])
-                await self.bot.send_message(dialog["client_id"], f"💬 Вам отвечает {esc(staff_name)} · {esc(dept)}")
+        try:  # клиент видит только сам ответ, без имени оператора
             sent = await self.bot.copy_message(dialog["client_id"], message.chat.id, message.message_id)
         except TelegramForbiddenError:
             return "Клиент заблокировал бота, сообщение не доставлено."
         except TelegramBadRequest as exc:
             return f"Не доставлено: {exc.message}"
         await self.map(dialog["client_id"], sent.message_id, dialog["id"])
-        await self.db.run("UPDATE dialogs SET staff_id = COALESCE(staff_id, ?), status = 'active', last_at = ?, "
+        await self.remember(dialog["id"], "operator", message.chat.id, message.message_id, operator_id)
+        await self.db.run("UPDATE dialogs SET staff_id = ?, status = 'active', last_at = ?, "
                           "first_reply = COALESCE(first_reply, ?), last_staff = ? WHERE id = ?",
-                          staff_id, now(), now(), staff_id, dialog["id"])
-        if dialog["staff_id"] != staff_id and self.opt("mode") == "topics":
-            await self.db.run("UPDATE dialogs SET staff_id = ? WHERE id = ?", staff_id, dialog["id"])
+                          operator_id, now(), now(), operator_id, dialog["id"])
+        if mirror:
+            await self.mirror(dialog, message, operator_id, name)
         return None
 
-    async def close(self, dialog_id: int, by: int | None) -> None:
+    async def mirror(self, dialog: Any, message: Message, operator_id: int, name: str) -> None:
+        """Остальные операторы видят, что и когда ответил коллега, - чтобы не отвечать повторно."""
+        for uid in await self.audience(dialog):
+            if uid == operator_id:
+                continue
+            head = await self.send_safe(lambda uid=uid: self.bot.send_message(
+                uid, f"✅ <b>{esc(name)}</b> ответил в {hhmm()} · обращение #{dialog['id']}",
+                reply_markup=self.reply_kb(dialog["id"]), disable_notification=True))
+            if head:
+                await self.map(uid, head.message_id, dialog["id"])
+            copy = await self.send_safe(lambda uid=uid: self.bot.copy_message(
+                uid, message.chat.id, message.message_id, disable_notification=True))
+            if copy:
+                await self.map(uid, copy.message_id, dialog["id"])
+
+    async def close(self, dialog_id: int, by: int | None, by_name: str = "") -> None:
         d = await self.db.one("SELECT * FROM dialogs WHERE id = ?", dialog_id)
         if not d or d["status"] == "closed":
             return
         await self.db.run("UPDATE dialogs SET status = 'closed', closed_at = ? WHERE id = ?", now(), dialog_id)
         await self.db.run("DELETE FROM active WHERE dialog_id = ?", dialog_id)
         await self.db.run("UPDATE clients SET current = NULL WHERE id = ? AND current = ?", d["client_id"], dialog_id)
-        try:
-            await self.bot.send_message(d["client_id"], self.opt("closed"))
-        except (TelegramForbiddenError, TelegramBadRequest):
-            pass
+        await self.send_safe(lambda: self.bot.send_message(d["client_id"], self.opt("closed")))
+        for uid in await self.audience(d):
+            if uid != by:
+                await self.send_safe(lambda uid=uid: self.bot.send_message(
+                    uid, f"✅ Обращение #{dialog_id} закрыто" + (f": {esc(by_name)}" if by_name else ""),
+                    disable_notification=True))
         if d["topic_id"] and kit.bound_chat_id():
             try:
                 await self.bot.close_forum_topic(kit.bound_chat_id(), d["topic_id"])
@@ -284,54 +368,69 @@ async def dept_keyboard(sv: Svyaz):
     return kit.kb(kit.chunk([kit.btn(d["title"], f"sv:dept:{d['id']}") for d in depts], kit.ui_cols("dept_cols", 1)))
 
 
-# --- клиент ---------------------------------------------------------------------
+async def new_invite(sv: Svyaz, dept_id: int = 0) -> str:
+    token = secrets.token_urlsafe(9)
+    await sv.db.run("INSERT INTO invites(token, dept_id, created_at) VALUES (?, ?, ?)", token, dept_id, now())
+    return f"https://t.me/{sv.username}?start=op_{token}"
+
+
+# --- клиент и приглашения -----------------------------------------------------------
 @router.message(CommandStart(), F.chat.type == "private")
 async def start(message: Message, command: CommandObject, sv: Svyaz, state: FSMContext) -> None:
     await state.clear()
     u = message.from_user
     arg = (command.args or "").strip()
-    if arg.startswith("staff_"):
-        inv = await sv.db.one("SELECT * FROM invites WHERE token = ?", arg[6:])
+    token = arg[3:] if arg.startswith("op_") else arg[6:] if arg.startswith("staff_") else ""
+    if token:
+        inv = await sv.db.one("SELECT * FROM invites WHERE token = ?", token)
         if not inv:
             await message.answer("Приглашение недействительно. Попросите новое у владельца бота.")
             return
-        await sv.db.run("INSERT OR REPLACE INTO staff(user_id, dept_id, name, added_at) VALUES (?, ?, ?, ?)",
-                        u.id, inv["dept_id"], u.full_name, now())
-        title = await sv.dept_title(inv["dept_id"])
-        await message.answer(f"✅ Вы исполнитель в отделе «{esc(title)}». Новые обращения будут приходить сюда.\n\n"
-                             "Как отвечать: нажмите «Ответить» под сообщением клиента и просто пишите. "
-                             "/dialogs - открытые диалоги, /close - закрыть текущий.")
+        await sv.db.run("INSERT INTO operators(user_id, name, username, added_at) VALUES (?, ?, ?, ?) "
+                        "ON CONFLICT(user_id) DO UPDATE SET name = excluded.name, username = excluded.username",
+                        u.id, u.full_name, u.username, now())
+        dept = ""
+        if inv["dept_id"]:
+            await sv.db.run("INSERT OR REPLACE INTO staff(user_id, dept_id, name, added_at) VALUES (?, ?, ?, ?)",
+                            u.id, inv["dept_id"], u.full_name, now())
+            dept = await sv.dept_title(inv["dept_id"])
+        waiting = await sv.db.value("SELECT COUNT(*) FROM dialogs WHERE status != 'closed'", default=0)
+        await message.answer(
+            "✅ Вы оператор" + (f" в отделе «{esc(dept)}»" if dept else "") + ". Обращения клиентов будут приходить сюда.\n\n"
+            "Как отвечать: нажмите «↩️ Ответить» под сообщением клиента и просто пишите, или ответьте на него реплаем. "
+            "Клиент видит только текст ответа, ваше имя ему не показывается. Другие операторы видят, что вы ответили.\n"
+            "/dialogs - открытые обращения, /close - закрыть текущее."
+            + (f"\n\nСейчас ждут ответа: {waiting}. Откройте /dialogs." if waiting else ""))
         for oid in kit.owner_ids():
-            try:
-                await sv.bot.send_message(oid, f"👤 {esc(u.full_name)} присоединился к отделу «{esc(title)}»")
-            except (TelegramForbiddenError, TelegramBadRequest):
-                pass
+            if oid != u.id:
+                await sv.send_safe(lambda oid=oid: sv.bot.send_message(
+                    oid, f"👤 {esc(u.full_name)} теперь оператор" + (f" отдела «{esc(dept)}»" if dept else "")))
         return
     await sv.db.run("INSERT INTO clients(id, username, first_name, created_at) VALUES (?, ?, ?, ?) "
                     "ON CONFLICT(id) DO UPDATE SET username = excluded.username, first_name = excluded.first_name",
                     u.id, u.username, u.first_name, now())
-    depts = await sv.departments()
     text = sv.opt("greeting")
     if sv.is_owner(u.id):
-        text += "\n\n⚙️ Вы владелец: /admin - отделы, исполнители, настройки."
-    if not depts:
-        await message.answer(text + "\n\nБот ещё настраивается." if not sv.is_owner(u.id) else text)
+        ops = len(await sv.operators())
+        text += "\n\n⚙️ Вы владелец: /admin - операторы, отделы, тексты." + (
+            "" if ops else "\n⚠️ Операторов пока нет: обращения никто не видит. /admin → 👥 Операторы.")
+    depts = await sv.departments()
+    if len(depts) > 1:
+        await message.answer(text, reply_markup=await dept_keyboard(sv))
         return
+    await message.answer(text)
     if len(depts) == 1:
-        await choose(message, sv, depts[0]["id"])
-        return
-    await message.answer(text, reply_markup=await dept_keyboard(sv))
+        await choose(message, sv, depts[0]["id"], u.id, silent=True)
 
 
-async def choose(target: Message, sv: Svyaz, dept_id: int, user_id: int | None = None) -> None:
-    uid = user_id or target.from_user.id
+async def choose(target: Message, sv: Svyaz, dept_id: int, user_id: int, silent: bool = False) -> None:
     d = await sv.db.one("SELECT * FROM dialogs WHERE client_id = ? AND dept_id = ? AND status != 'closed' "
-                        "ORDER BY id DESC LIMIT 1", uid, dept_id)
+                        "ORDER BY id DESC LIMIT 1", user_id, dept_id)
     dialog_id = d["id"] if d else await sv.db.run(
-        "INSERT INTO dialogs(client_id, dept_id, created_at, last_at) VALUES (?, ?, ?, ?)", uid, dept_id, now(), now())
-    await sv.db.run("UPDATE clients SET current = ? WHERE id = ?", dialog_id, uid)
-    title = await sv.dept_title(dept_id)
-    await target.answer(f"<b>{esc(title)}</b>\n{sv.opt('after_choose')}")
+        "INSERT INTO dialogs(client_id, dept_id, created_at, last_at) VALUES (?, ?, ?, ?)", user_id, dept_id, now(), now())
+    await sv.db.run("UPDATE clients SET current = ? WHERE id = ?", dialog_id, user_id)
+    if not silent:
+        await target.answer(f"<b>{esc(await sv.dept_title(dept_id))}</b>\n{sv.opt('after_choose')}")
 
 
 @router.callback_query(F.data.startswith("sv:dept:"))
@@ -352,8 +451,8 @@ async def private_message(message: Message, sv: Svyaz) -> None:
 
 async def _private_message(message: Message, sv: Svyaz) -> None:
     uid = message.from_user.id
-    if await sv.is_staff(uid) or (sv.is_owner(uid) and await sv.db.one("SELECT 1 FROM active WHERE staff_id = ?", uid)):
-        await staff_message(message, sv)
+    if await sv.is_operator(uid):
+        await operator_message(message, sv)
         return
     client = await sv.db.one("SELECT * FROM clients WHERE id = ?", uid)
     if client is None:
@@ -379,14 +478,16 @@ async def _private_message(message: Message, sv: Svyaz) -> None:
                               uid, dept_id, now(), now())
         await sv.db.run("UPDATE clients SET current = ? WHERE id = ?", did, uid)
         dialog = await sv.db.one("SELECT * FROM dialogs WHERE id = ?", did)
-    ok = await sv.deliver_from_client(dialog, message)
+    fresh = not await sv.db.one("SELECT 1 FROM history WHERE dialog_id = ? LIMIT 1", dialog["id"])
+    await sv.remember(dialog["id"], "client", uid, message.message_id)
     await sv.db.run("UPDATE dialogs SET last_at = ? WHERE id = ?", now(), dialog["id"])
-    if not ok:
-        await message.answer("Сейчас не получается доставить сообщение. Попробуйте чуть позже.")
+    await sv.deliver_from_client(dialog, message, fresh)
+    if fresh:  # клиенту одно короткое подтверждение на обращение, без подробностей о том, кто его увидит
+        await message.answer(sv.opt("received"))
 
 
-# --- исполнители -----------------------------------------------------------------
-async def staff_message(message: Message, sv: Svyaz) -> None:
+# --- операторы ---------------------------------------------------------------------
+async def operator_message(message: Message, sv: Svyaz) -> None:
     uid = message.from_user.id
     dialog = None
     if message.reply_to_message:
@@ -396,11 +497,17 @@ async def staff_message(message: Message, sv: Svyaz) -> None:
         if active:
             dialog = await sv.db.one("SELECT * FROM dialogs WHERE id = ?", active["dialog_id"])
     if not dialog:
-        await message.answer("Выберите диалог: нажмите «Ответить» под сообщением клиента или откройте /dialogs.")
+        await message.answer("Кому ответить? Нажмите «↩️ Ответить» под сообщением клиента, ответьте на него реплаем "
+                             "или откройте /dialogs.")
         return
     err = await sv.deliver_to_client(dialog, message, uid, message.from_user.full_name)
     if err:
         await message.answer(f"⚠️ {err}")
+        return
+    try:  # отметка «доставлено» без лишних сообщений
+        await sv.bot.set_message_reaction(message.chat.id, message.message_id, [ReactionTypeEmoji(emoji="👌")])
+    except Exception:
+        pass
 
 
 @router.message(F.chat.type.in_({"group", "supergroup"}), F.message_thread_id)
@@ -413,66 +520,87 @@ async def topic_message(message: Message, sv: Svyaz) -> None:
                              message.message_thread_id)
     if not dialog:
         return
-    err = await sv.deliver_to_client(dialog, message, message.from_user.id, message.from_user.full_name)
+    err = await sv.deliver_to_client(dialog, message, message.from_user.id, message.from_user.full_name, mirror=False)
     if err:
         await message.reply(f"⚠️ {err}")
 
 
-async def staff_allowed(sv: Svyaz, uid: int) -> bool:
-    return sv.is_owner(uid) or await sv.is_staff(uid)
+async def can_handle(sv: Svyaz, call: CallbackQuery) -> bool:
+    if call.message and call.message.chat.type != "private" and call.message.chat.id == kit.bound_chat_id():
+        return True
+    return await sv.is_operator(call.from_user.id)
 
 
 @router.callback_query(F.data.startswith("sv:act:"))
 async def activate(call: CallbackQuery, sv: Svyaz) -> None:
-    uid = call.from_user.id
-    if not await staff_allowed(sv, uid):
-        await call.answer()
+    if not await sv.is_operator(call.from_user.id):
+        await call.answer("Отвечать могут только операторы", show_alert=True)
         return
     dialog_id = int(call.data.split(":")[2])
     d = await sv.db.one("SELECT * FROM dialogs WHERE id = ?", dialog_id)
     if not d or d["status"] == "closed":
-        await call.answer("Диалог уже закрыт", show_alert=True)
+        await call.answer("Обращение уже закрыто", show_alert=True)
         return
-    if d["staff_id"] and d["staff_id"] != uid:
-        who = await sv.db.value("SELECT name FROM staff WHERE user_id = ?", d["staff_id"], default="другой исполнитель")
-        await call.answer(f"Диалог уже ведёт {who}. Можно попросить передать его вам.", show_alert=True)
+    await sv.db.run("INSERT OR REPLACE INTO active(staff_id, dialog_id) VALUES (?, ?)", call.from_user.id, dialog_id)
+    await call.answer()
+    extra = ""
+    if d["last_staff"] and d["last_staff"] != call.from_user.id:
+        who = await sv.db.value("SELECT name FROM operators WHERE user_id = ?", d["last_staff"], default="коллега")
+        extra = f"\nПоследним отвечал(а): {esc(who)}."
+    await call.message.answer(f"✍️ Вы отвечаете в обращение #{dialog_id}\n{await sv.client_card(d['client_id'])}{extra}\n"
+                              "Просто отправляйте сообщения: клиент увидит только текст. Закончить: /close")
+
+
+@router.callback_query(F.data.startswith("sv:hist:"))
+async def history(call: CallbackQuery, sv: Svyaz) -> None:
+    if not await can_handle(sv, call):
+        await call.answer()
         return
-    if not d["staff_id"]:
-        await sv.db.run("UPDATE dialogs SET staff_id = ?, status = 'active' WHERE id = ?", uid, dialog_id)
-        for s in await sv.dept_staff(d["dept_id"]):
-            if s["user_id"] != uid:
-                try:
-                    await sv.bot.send_message(s["user_id"], f"Диалог #{dialog_id} взял {esc(call.from_user.full_name)}",
-                                              disable_notification=True)
-                except (TelegramForbiddenError, TelegramBadRequest):
-                    pass
-    await sv.db.run("INSERT OR REPLACE INTO active(staff_id, dialog_id) VALUES (?, ?)", uid, dialog_id)
-    await call.answer(f"Диалог #{dialog_id}: всё, что вы пишете, уйдёт клиенту", show_alert=False)
-    await call.message.answer(f"✍️ Сейчас вы пишете в диалог #{dialog_id} ({await sv.client_line(d['client_id'])}). "
-                              "Просто отправляйте сообщения. Закончить: /close")
+    dialog_id = int(call.data.split(":")[2])
+    rows = await sv.db.all("SELECT * FROM (SELECT * FROM history WHERE dialog_id = ? ORDER BY id DESC LIMIT ?) "
+                           "ORDER BY id", dialog_id, HISTORY_LIMIT)
+    await call.answer()
+    chat = call.message.chat.id
+    if not rows:
+        await call.message.answer("История пуста.")
+        return
+    await call.message.answer(f"📜 История обращения #{dialog_id} (последние {len(rows)}):", disable_notification=True)
+    last = None
+    for r in rows:
+        who = (r["side"], r["operator_id"])
+        if who != last:
+            if r["side"] == "client":
+                label = "👤 Клиент"
+            else:
+                label = "🎧 " + esc(await sv.db.value("SELECT name FROM operators WHERE user_id = ?", r["operator_id"],
+                                                     default="Оператор"))
+            await sv.send_safe(lambda label=label, r=r: sv.bot.send_message(
+                chat, f"<b>{label}</b> · {hhmm(r['created_at'])}", disable_notification=True))
+            last = who
+        await sv.send_safe(lambda r=r: sv.bot.copy_message(chat, r["chat_id"], r["message_id"], disable_notification=True))
+        await asyncio.sleep(0.05)
 
 
 @router.message(Command("dialogs"), F.chat.type == "private")
 async def dialogs(message: Message, sv: Svyaz) -> None:
     uid = message.from_user.id
-    if not await staff_allowed(sv, uid):
+    if not await sv.is_operator(uid):
+        if sv.is_owner(uid):
+            await message.answer("Вы не оператор. Добавить себя: /admin → 👥 Операторы → ссылка-приглашение.")
         return
-    if sv.is_owner(uid):
-        rows = await sv.db.all("SELECT * FROM dialogs WHERE status != 'closed' ORDER BY last_at DESC LIMIT 30")
-    else:
-        rows = await sv.db.all("SELECT d.* FROM dialogs d WHERE d.status != 'closed' AND (d.staff_id = ? OR "
-                               "(d.staff_id IS NULL AND d.dept_id IN (SELECT dept_id FROM staff WHERE user_id = ?))) "
-                               "ORDER BY d.last_at DESC LIMIT 30", uid, uid)
+    rows = [d for d in await sv.db.all("SELECT * FROM dialogs WHERE status != 'closed' ORDER BY last_at DESC LIMIT 40")
+            if uid in await sv.audience(d)]
     if not rows:
-        await message.answer("Открытых диалогов нет 🎉")
+        await message.answer("Открытых обращений нет 🎉")
         return
     buttons = []
     for d in rows:
-        c = await sv.db.one("SELECT first_name FROM clients WHERE id = ?", d["client_id"])
-        mark = "🆕" if d["status"] == "new" else ("👤" if d["staff_id"] == uid else "💬")
-        buttons.append([kit.btn(f"{mark} #{d['id']} {(c['first_name'] if c else '') or d['client_id']} · "
-                                f"{await sv.dept_title(d['dept_id'])}", f"sv:act:{d['id']}")])
-    await message.answer("<b>Открытые диалоги</b>\n🆕 новый · 👤 ваш · 💬 у коллеги", reply_markup=kit.kb(buttons))
+        c = await sv.db.one("SELECT first_name, username FROM clients WHERE id = ?", d["client_id"])
+        mark = "🆕" if d["status"] == "new" else "💬"
+        name = (c["first_name"] if c else None) or str(d["client_id"])
+        buttons.append([kit.btn(f"{mark} #{d['id']} {name}" + (f" @{c['username']}" if c and c["username"] else ""),
+                                f"sv:act:{d['id']}")])
+    await message.answer("<b>Открытые обращения</b>\n🆕 без ответа · 💬 уже отвечали", reply_markup=kit.kb(buttons))
 
 
 @router.message(Command("close"), F.chat.type == "private")
@@ -480,20 +608,20 @@ async def close_cmd(message: Message, sv: Svyaz) -> None:
     uid = message.from_user.id
     active = await sv.db.one("SELECT dialog_id FROM active WHERE staff_id = ?", uid)
     if not active:
-        await message.answer("Нет активного диалога.")
+        await message.answer("Нет активного обращения.")
         return
-    await sv.close(active["dialog_id"], uid)
-    await message.answer(f"✅ Диалог #{active['dialog_id']} закрыт.")
+    await sv.close(active["dialog_id"], uid, message.from_user.full_name)
+    await message.answer(f"✅ Обращение #{active['dialog_id']} закрыто.")
 
 
 @router.callback_query(F.data.startswith("sv:close:"))
 async def close_btn(call: CallbackQuery, sv: Svyaz) -> None:
-    if not await staff_allowed(sv, call.from_user.id) and call.message.chat.id != kit.bound_chat_id():
+    if not await can_handle(sv, call):
         await call.answer()
         return
     dialog_id = int(call.data.split(":")[2])
-    await sv.close(dialog_id, call.from_user.id)
-    await call.answer(f"Диалог #{dialog_id} закрыт")
+    await sv.close(dialog_id, call.from_user.id, call.from_user.full_name)
+    await call.answer(f"Обращение #{dialog_id} закрыто")
     try:
         await call.message.edit_reply_markup(reply_markup=None)
     except TelegramBadRequest:
@@ -502,7 +630,7 @@ async def close_btn(call: CallbackQuery, sv: Svyaz) -> None:
 
 @router.callback_query(F.data.startswith("sv:ban:"))
 async def ban_btn(call: CallbackQuery, sv: Svyaz) -> None:
-    if not await staff_allowed(sv, call.from_user.id) and call.message.chat.id != kit.bound_chat_id():
+    if not await can_handle(sv, call):
         await call.answer()
         return
     dialog_id = int(call.data.split(":")[2])
@@ -519,75 +647,67 @@ async def ban_btn(call: CallbackQuery, sv: Svyaz) -> None:
 
 @router.callback_query(F.data.startswith("sv:tr:"))
 async def transfer_menu(call: CallbackQuery, sv: Svyaz) -> None:
-    if not await staff_allowed(sv, call.from_user.id):
+    if not await sv.is_operator(call.from_user.id):
         await call.answer()
         return
     dialog_id = int(call.data.split(":")[2])
-    depts = await sv.departments()
-    rows = [[kit.btn(d["title"], f"sv:trd:{dialog_id}:{d['id']}")] for d in depts]
-    await call.message.answer(f"Куда передать диалог #{dialog_id}?", reply_markup=kit.kb(rows))
+    rows = [[kit.btn(d["title"], f"sv:trd:{dialog_id}:{d['id']}")] for d in await sv.departments()]
+    await call.message.answer(f"Куда передать обращение #{dialog_id}?", reply_markup=kit.kb(rows))
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("sv:trd:"))
 async def transfer(call: CallbackQuery, sv: Svyaz) -> None:
-    if not await staff_allowed(sv, call.from_user.id):
+    if not await sv.is_operator(call.from_user.id):
         await call.answer()
         return
     _, _, did, dept = call.data.split(":")
     dialog_id, dept_id = int(did), int(dept)
-    await sv.db.run("UPDATE dialogs SET dept_id = ?, staff_id = NULL, status = 'new' WHERE id = ?", dept_id, dialog_id)
+    await sv.db.run("UPDATE dialogs SET dept_id = ?, status = 'new' WHERE id = ?", dept_id, dialog_id)
     await sv.db.run("DELETE FROM active WHERE dialog_id = ?", dialog_id)
     d = await sv.db.one("SELECT * FROM dialogs WHERE id = ?", dialog_id)
     title = await sv.dept_title(dept_id)
-    for s in await sv.dept_staff(dept_id):
-        try:
-            card = await sv.bot.send_message(s["user_id"], f"🔀 Вам передан диалог #{dialog_id} · {esc(title)}\n"
-                                                           f"{await sv.client_line(d['client_id'])}",
-                                             reply_markup=sv.card_kb(dialog_id, False))
-            await sv.map(s["user_id"], card.message_id, dialog_id)
-        except (TelegramForbiddenError, TelegramBadRequest):
-            pass
-    try:
-        await sv.bot.send_message(d["client_id"], f"Ваш диалог передан: {esc(title)}. Скоро ответят.")
-    except (TelegramForbiddenError, TelegramBadRequest):
-        pass
-    await call.message.edit_text(f"✅ Диалог #{dialog_id} передан в «{esc(title)}»")
+    text = f"🔀 Вам передано обращение #{dialog_id} · {esc(title)}\n{await sv.client_card(d['client_id'])}"
+    markup = await sv.card_kb(dialog_id)
+    for uid in await sv.audience(d):
+        card = await sv.send_safe(lambda uid=uid: sv.bot.send_message(uid, text, reply_markup=markup))
+        if card:
+            await sv.map(uid, card.message_id, dialog_id)
+    await call.message.edit_text(f"✅ Обращение #{dialog_id} передано в «{esc(title)}»")
     await call.answer()
 
 
-# --- админка владельца ------------------------------------------------------------
+# --- админка владельца ----------------------------------------------------------------
 async def admin_view(sv: Svyaz) -> tuple[str, Any]:
+    ops = await sv.operators()
     depts = await sv.departments()
     day = now() - 86400
     today = await sv.db.value("SELECT COUNT(*) FROM dialogs WHERE created_at > ?", day, default=0)
     open_ = await sv.db.value("SELECT COUNT(*) FROM dialogs WHERE status != 'closed'", default=0)
+    unanswered = await sv.db.value("SELECT COUNT(*) FROM dialogs WHERE status = 'new'", default=0)
     avg = await sv.db.value("SELECT AVG(first_reply - created_at) FROM dialogs WHERE first_reply IS NOT NULL AND "
                             "created_at > ?", now() - 7 * 86400)
-    lines = ["⚙️ <b>Связь: админка</b>\n",
-             f"📨 Диалогов сегодня: <b>{today}</b>, открыто: <b>{open_}</b>",
-             f"⏱ Средний первый ответ (7 дней): <b>{int(avg // 60)} мин</b>" if avg else "⏱ Ответов пока нет",
-             f"🧭 Режим: <b>{'темы в группе' if sv.opt('mode') == 'topics' else 'личка исполнителей'}</b>",
-             f"👤 Имена исполнителей клиенту: <b>{'показывать' if sv.opt('show_names') else 'скрывать'}</b>", "",
-             "<b>Отделы</b>"]
-    for d in depts:
-        staff = await sv.dept_staff(d["id"])
-        lines.append(f"• {esc(d['title'])}: " + (", ".join(esc(s["name"]) for s in staff) or "нет исполнителей"))
-    if not depts:
-        lines.append("Пока нет. Добавьте первый отдел, например «Продажи» или «Заказы».")
+    lines = ["⚙️ <b>Связь: админка</b>\n"]
+    if not ops:
+        lines.append("⚠️ <b>Операторов нет: обращения никто не видит.</b> Добавьте их в разделе 👥 Операторы.\n")
+    names = ", ".join(esc(o["name"]) for o in ops[:5]) + ("…" if len(ops) > 5 else "")
+    lines += [f"👥 Операторов: <b>{len(ops)}</b>" + (f" ({names})" if ops else ""),
+              f"📨 Обращений сегодня: <b>{today}</b> · открыто: <b>{open_}</b> · без ответа: <b>{unanswered}</b>",
+              f"⏱ Средний первый ответ (7 дней): <b>{int(avg // 60)} мин</b>" if avg else "⏱ Ответов пока нет",
+              f"📁 Отделов: <b>{len(depts)}</b>" + (" (клиент выбирает, кому писать)" if len(depts) > 1 else ""),
+              f"🧭 Режим: <b>{'темы в группе' if sv.opt('mode') == 'topics' else 'личка операторов'}</b>"]
     if sv.opt("mode") == "topics" and not kit.bound_chat_id():
         lines.append(f"\n⚠️ Для режима тем привяжите группу с темами: <code>/bind {kit.platform().get('bind_code', '')}</code>")
-    rows = [[kit.btn(f"📁 {d['title']}", f"sva:dept:{d['id']}")] for d in depts]
-    rows.append([kit.btn("➕ Новый отдел", "sva:newdept", style="success")])
-    rows.append([kit.btn("✏️ Приветствие", "sva:txt:greeting"), kit.btn("✏️ Текст после выбора", "sva:txt:after_choose")])
-    rows.append([kit.btn(f"👤 Имена: {'вкл' if sv.opt('show_names') else 'выкл'}", "sva:tog:show_names"),
-                 kit.btn(f"🧭 Режим: {'темы' if sv.opt('mode') == 'topics' else 'личка'}", "sva:mode")])
-    rows.append([kit.btn("⛔️ Заблокированные", "sva:bans"), kit.btn("🔄 Обновить", "sva:home")])
+    rows = [[kit.btn("👥 Операторы", "sva:ops", style=None if ops else "primary"), kit.btn("📁 Отделы", "sva:depts")],
+            [kit.btn("✏️ Приветствие", "sva:txt:greeting"), kit.btn("✏️ «Сообщение получено»", "sva:txt:received")],
+            [kit.btn("✏️ Текст после выбора отдела", "sva:txt:after_choose")],
+            [kit.btn(f"🧭 Режим: {'темы' if sv.opt('mode') == 'topics' else 'личка'}", "sva:mode"),
+             kit.btn("⛔️ Заблокированные", "sva:bans")],
+            [kit.btn("🔄 Обновить", "sva:home")]]
     return "\n".join(lines), kit.kb(rows)
 
 
-async def show_admin(target: Message | CallbackQuery, sv: Svyaz) -> None:
-    text, markup = await admin_view(sv)
+async def show(target: Message | CallbackQuery, text: str, markup: Any) -> None:
     if isinstance(target, CallbackQuery):
         try:
             await target.message.edit_text(text, reply_markup=markup)
@@ -596,6 +716,11 @@ async def show_admin(target: Message | CallbackQuery, sv: Svyaz) -> None:
         await target.answer()
     else:
         await target.answer(text, reply_markup=markup)
+
+
+async def show_admin(target: Message | CallbackQuery, sv: Svyaz) -> None:
+    text, markup = await admin_view(sv)
+    await show(target, text, markup)
 
 
 @router.message(Command("admin"), F.chat.type == "private")
@@ -612,13 +737,61 @@ async def admin_home(call: CallbackQuery, sv: Svyaz, state: FSMContext) -> None:
         await show_admin(call, sv)
 
 
+@router.callback_query(F.data == "sva:ops")
+async def admin_operators(call: CallbackQuery, sv: Svyaz) -> None:
+    if not sv.is_owner(call.from_user.id):
+        await call.answer()
+        return
+    ops = await sv.operators()
+    link = await new_invite(sv, 0)
+    listing = "\n".join(f"• {esc(o['name'])}" + (f" @{esc(o['username'])}" if o["username"] else "")
+                        + f" · <code>{o['user_id']}</code>" for o in ops) or "Пока никого."
+    text = ("👥 <b>Операторы</b>\nТолько они получают обращения и могут отвечать. Владелец бота - не оператор, "
+            "пока сам не откроет ссылку-приглашение.\n\n" + listing +
+            f"\n\nСсылка-приглашение (отправьте оператору, действует 7 дней):\n<code>{link}</code>")
+    rows = [[kit.btn("📋 Скопировать приглашение", copy=link)]]
+    rows += [[kit.btn(f"✖️ Убрать {o['name']}", f"sva:oprm:{o['user_id']}")] for o in ops]
+    rows.append([kit.btn("⬅️ Назад", "sva:home")])
+    await show(call, text, kit.kb(rows))
+
+
+@router.callback_query(F.data.startswith("sva:oprm:"))
+async def admin_operator_remove(call: CallbackQuery, sv: Svyaz) -> None:
+    if not sv.is_owner(call.from_user.id):
+        await call.answer()
+        return
+    uid = int(call.data.split(":")[2])
+    await sv.db.run("DELETE FROM operators WHERE user_id = ?", uid)
+    await sv.db.run("DELETE FROM staff WHERE user_id = ?", uid)
+    await sv.db.run("DELETE FROM active WHERE staff_id = ?", uid)
+    await sv.send_safe(lambda: sv.bot.send_message(uid, "Вы больше не оператор этого бота."))
+    await admin_operators(call, sv)
+
+
+@router.callback_query(F.data == "sva:depts")
+async def admin_depts(call: CallbackQuery, sv: Svyaz) -> None:
+    if not sv.is_owner(call.from_user.id):
+        await call.answer()
+        return
+    depts = await sv.departments()
+    text = ("📁 <b>Отделы</b> (необязательно)\nЕсли отделов два и больше, клиент выбирает, кому написать, и обращение "
+            "получают операторы этого отдела. В отделе без своих операторов обращения получают все операторы.\n\n")
+    for d in depts:
+        names = await sv.db.all("SELECT name FROM staff WHERE dept_id = ?", d["id"])
+        text += f"• {esc(d['title'])}: " + (", ".join(esc(n["name"]) for n in names) or "все операторы") + "\n"
+    rows = [[kit.btn(f"📁 {d['title']}", f"sva:dept:{d['id']}")] for d in depts]
+    rows.append([kit.btn("➕ Новый отдел", "sva:newdept", style="success")])
+    rows.append([kit.btn("⬅️ Назад", "sva:home")])
+    await show(call, text, kit.kb(rows))
+
+
 @router.callback_query(F.data == "sva:newdept")
 async def new_dept(call: CallbackQuery, sv: Svyaz, state: FSMContext) -> None:
     if not sv.is_owner(call.from_user.id):
         return
     await state.set_state(Form.dept_title)
     await call.message.answer("Название отдела (так его увидят клиенты), например: «Продажи» или «Заказы»",
-                              reply_markup=kit.kb([[kit.btn("Отмена", "sva:home")]]))
+                              reply_markup=kit.kb([[kit.btn("Отмена", "sva:depts")]]))
     await call.answer()
 
 
@@ -634,6 +807,7 @@ async def new_dept_title(message: Message, sv: Svyaz, state: FSMContext) -> None
         pos = await sv.db.value("SELECT MAX(position) FROM departments", default=0)
         await sv.db.run("INSERT INTO departments(title, position) VALUES (?, ?)", title, pos + 1)
     await state.clear()
+    await message.answer("✅ Сохранено")
     await show_admin(message, sv)
 
 
@@ -643,21 +817,16 @@ async def dept_card(call: CallbackQuery, sv: Svyaz) -> None:
         return
     dept_id = int(call.data.split(":")[2])
     title = await sv.dept_title(dept_id)
-    staff = await sv.dept_staff(dept_id)
-    token = secrets.token_urlsafe(9)
-    await sv.db.run("INSERT INTO invites(token, dept_id, created_at) VALUES (?, ?, ?)", token, dept_id, now())
-    link = f"https://t.me/{sv.username}?start=staff_{token}"
-    text = (f"📁 <b>{esc(title)}</b>\n\nИсполнители: " + (", ".join(esc(s["name"]) for s in staff) or "нет") +
-            f"\n\nСсылка-приглашение в отдел (отправьте исполнителю):\n<code>{link}</code>")
+    staff = await sv.db.all("SELECT user_id, name FROM staff WHERE dept_id = ?", dept_id)
+    link = await new_invite(sv, dept_id)
+    text = (f"📁 <b>{esc(title)}</b>\n\nОператоры отдела: " +
+            (", ".join(esc(s["name"]) for s in staff) or "нет своих (обращения получают все операторы)") +
+            f"\n\nСсылка-приглашение в отдел (оператор попадёт сразу в этот отдел):\n<code>{link}</code>")
     rows = [[kit.btn("📋 Скопировать приглашение", copy=link)]]
-    rows += [[kit.btn(f"✖️ Убрать {s['name']}", f"sva:rm:{dept_id}:{s['user_id']}")] for s in staff]
+    rows += [[kit.btn(f"✖️ Убрать из отдела {s['name']}", f"sva:rm:{dept_id}:{s['user_id']}")] for s in staff]
     rows.append([kit.btn("✏️ Переименовать", f"sva:ren:{dept_id}"), kit.btn("⬆️ Выше", f"sva:up:{dept_id}")])
-    rows.append([kit.btn("🗑 Удалить отдел", f"sva:del:{dept_id}", style="danger"), kit.btn("⬅️ Назад", "sva:home")])
-    try:
-        await call.message.edit_text(text, reply_markup=kit.kb(rows))
-    except TelegramBadRequest:
-        pass
-    await call.answer()
+    rows.append([kit.btn("🗑 Удалить отдел", f"sva:del:{dept_id}", style="danger"), kit.btn("⬅️ Назад", "sva:depts")])
+    await show(call, text, kit.kb(rows))
 
 
 @router.callback_query(F.data.startswith("sva:rm:"))
@@ -691,7 +860,7 @@ async def dept_up(call: CallbackQuery, sv: Svyaz) -> None:
         ids[i - 1], ids[i] = ids[i], ids[i - 1]
     for pos, did in enumerate(ids):
         await sv.db.run("UPDATE departments SET position = ? WHERE id = ?", pos, did)
-    await call.answer("Готово")
+    await admin_depts(call, sv)
 
 
 @router.callback_query(F.data.startswith("sva:del:"))
@@ -699,19 +868,10 @@ async def delete_dept(call: CallbackQuery, sv: Svyaz) -> None:
     if not sv.is_owner(call.from_user.id):
         return
     dept_id = int(call.data.split(":")[2])
+    await sv.db.run("DELETE FROM staff WHERE dept_id = ?", dept_id)
     await sv.db.run("DELETE FROM departments WHERE id = ?", dept_id)
     await sv.db.run("UPDATE dialogs SET dept_id = NULL WHERE dept_id = ?", dept_id)
-    await show_admin(call, sv)
-
-
-@router.callback_query(F.data.startswith("sva:tog:"))
-async def toggle(call: CallbackQuery, sv: Svyaz) -> None:
-    if not sv.is_owner(call.from_user.id):
-        return
-    key = call.data.split(":")[2]
-    if key == "show_names":
-        await sv.db.set(key, not sv.opt(key))
-    await show_admin(call, sv)
+    await admin_depts(call, sv)
 
 
 @router.callback_query(F.data == "sva:mode")
@@ -731,7 +891,8 @@ async def edit_text(call: CallbackQuery, sv: Svyaz, state: FSMContext) -> None:
         return
     await state.set_state(Form.text)
     await state.update_data(key=key)
-    await call.message.answer(f"Сейчас:\n<blockquote>{esc(sv.opt(key))}</blockquote>\nОтправьте новый текст.",
+    await call.message.answer(f"Сейчас:\n<blockquote>{esc(sv.opt(key))}</blockquote>\nОтправьте новый текст. "
+                              "Форматирование и премиум-эмодзи сохранятся.",
                               reply_markup=kit.kb([[kit.btn("Отмена", "sva:home")]]))
     await call.answer()
 
@@ -754,12 +915,7 @@ async def bans(call: CallbackQuery, sv: Svyaz) -> None:
     rows = await sv.db.all("SELECT * FROM clients WHERE banned = 1 ORDER BY created_at DESC LIMIT 40")
     buttons = [[kit.btn(f"✅ Разбанить {r['first_name'] or r['id']}", f"sva:unban:{r['id']}")] for r in rows]
     buttons.append([kit.btn("⬅️ Назад", "sva:home")])
-    try:
-        await call.message.edit_text("⛔️ <b>Заблокированные</b>" + ("" if rows else "\n\nСписок пуст."),
-                                     reply_markup=kit.kb(buttons))
-    except TelegramBadRequest:
-        pass
-    await call.answer()
+    await show(call, "⛔️ <b>Заблокированные</b>" + ("" if rows else "\n\nСписок пуст."), kit.kb(buttons))
 
 
 @router.callback_query(F.data.startswith("sva:unban:"))
@@ -774,6 +930,7 @@ async def cleanup(db: ModuleDB) -> None:
     while True:
         await asyncio.sleep(3600)
         await db.run("DELETE FROM msgmap WHERE created_at < ?", now() - 90 * 86400)
+        await db.run("DELETE FROM history WHERE created_at < ?", now() - 90 * 86400)
         await db.run("DELETE FROM invites WHERE created_at < ?", now() - 7 * 86400)
 
 
@@ -791,6 +948,8 @@ async def main() -> None:
     dp.include_router(kit.bind_router())
     dp.include_router(router)
     await kit.ready(bot)
+    if not await sv.operators():
+        await sv.remind_no_operators()
     task = asyncio.create_task(cleanup(db))
     try:
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())

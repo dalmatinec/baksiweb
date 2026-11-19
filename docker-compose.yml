@@ -1,0 +1,40 @@
+# Запуск: docker compose up -d --build
+# С доменом и https (Caddy сам получит сертификат): docker compose --profile https up -d --build
+services:
+  baksi:
+    build: .
+    image: baksi-cloud
+    env_file: .env
+    volumes:
+      - ./data:/data
+    ports:
+      - "127.0.0.1:8080:8080"   # без домена веб доступен только с сервера (через SSH-туннель)
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 40s       # копии ботов успевают корректно остановиться
+    mem_limit: ${MEM_LIMIT:-3g}  # общий потолок памяти платформы со всеми ботами
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "5" }
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [baksi]
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  caddy_data:
+  caddy_config:

@@ -124,6 +124,22 @@ def create_web(app: App) -> FastAPI:
         set_cookie(resp, token)
         return resp
 
+    @web.get("/auth/widget", include_in_schema=False)
+    async def auth_widget_redirect(request: Request):
+        """Telegram Login Widget в режиме data-auth-url: данные приходят в query."""
+        limiter.check(client_ip(request), "auth", 20, 60)
+        if not await app.db.get_setting("login_widget", False):
+            return RedirectResponse("/app", status_code=303)
+        try:
+            tg = check_login_widget(dict(request.query_params), app.cfg.hub_token)
+        except HTTPException:
+            return RedirectResponse("/app#/expired", status_code=303)
+        user, _ = await app.billing.ensure_user(tg["id"], tg["username"], tg["first_name"])
+        token = await create_session(app, user["id"], request.headers.get("user-agent", ""))
+        resp = RedirectResponse("/app", status_code=303)
+        set_cookie(resp, token)
+        return resp
+
     @web.post("/api/auth/widget")
     async def auth_widget(request: Request, body: dict = Body(...)):
         limiter.check(client_ip(request), "auth", 20, 60)

@@ -68,7 +68,7 @@ async def view_items(ctx: Ctx) -> ViewResult:
     rows = _grid_rows(ctx, lambda i: f"a:item:{i.id}")
     rows.append([b("➕ Ссылка в чат", "x:inew", "success"), b("🌐 Обычная ссылка", "x:iunew")])
     rows.append([b("🔌 Чаты бота", "a:chats")])
-    rows.append(back_btn("a:home"))
+    rows.append(back_btn("a:cat:content"))
     html = ("🔗 <b>Кнопки меню</b>\n\n"
             "Кнопки стоят так же, как в меню у юзеров.\n"
             "✅ работает   ⚠️ чат недоступен   🔌 нет чата\n🌐 обычная ссылка   ⏸ выключена\n\n"

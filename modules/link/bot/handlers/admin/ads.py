@@ -43,7 +43,7 @@ async def view_ads(ctx: Ctx) -> ViewResult:
                   for r in rows_db]
     rows.append([b("➕ Новая реклама", "x:adnew", "success")])
     rows.append([b(f"⚙️ Общие настройки: {'вкл' if s('ads_enabled', 1) else '🔴 выкл'}", "a:adset")])
-    rows.append(back_btn("a:home"))
+    rows.append(back_btn("a:cat:promo"))
     html = ("📢 <b>Реклама</b>\n\n"
             "Создать: ➕ Новая реклама → перешли или отправь пост → ▶️ Запустить. "
             "Кнопки из пересланного поста подтянутся сами.\n\n"

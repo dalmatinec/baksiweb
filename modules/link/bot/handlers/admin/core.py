@@ -595,8 +595,7 @@ CONFIG_SECTIONS = CATEGORIES["system"][1]
 async def view_category(ctx: Ctx, key: str = "content") -> ViewResult:
     title, sections = CATEGORIES.get(key, CATEGORIES["content"])
     perms = ctx.app.perms(ctx.user_id) or set()
-    btns = [b(t, cb) for p, t, cb in sections if "*" in perms or p in perms]
-    rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    rows = [[b(t, cb)] for p, t, cb in sections if "*" in perms or p in perms]  # по одной: длинные названия не обрезаются
     rows.append(back_btn("a:home"))
     return f"<b>{title}</b>\n{CATEGORY_HINTS.get(key, '')}", rows
 

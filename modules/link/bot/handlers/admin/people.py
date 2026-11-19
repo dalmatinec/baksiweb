@@ -24,7 +24,7 @@ async def view_users(ctx: Ctx) -> ViewResult:
             f" / <b>{await q('SELECT COUNT(*) FROM users WHERE created_at > ?', (t - 7 * 86400,))}</b>\n"
             f"Забанены: <b>{await q('SELECT COUNT(*) FROM users WHERE is_banned = 1')}</b>\n"
             f"Заблокировали бота: <b>{await q('SELECT COUNT(*) FROM users WHERE is_blocked = 1')}</b>")
-    rows = [[b("🔍 Найти пользователя", "x:ufind")], [b("🚫 Забаненные", "a:banned:0")], back_btn("a:home")]
+    rows = [[b("🔍 Найти пользователя", "x:ufind")], [b("🚫 Забаненные", "a:banned:0")], back_btn("a:cat:people")]
     return html, rows
 
 
@@ -153,7 +153,7 @@ async def view_admins(ctx: Ctx) -> ViewResult:
     html = f"👮 <b>Админы</b>: {len(admins)}\n\n" + ("\n\n".join(lines) or "Пока никого. Нажмите ➕ Добавить.")
     rows: Rows = [[b("➕ Добавить", "x:adnew2", "success")]]
     rows += [[b(f"✏️ {name if name != 'ещё не заходил в бота' else uid}", f"a:adm:{uid}")] for uid, name, _ in admins]
-    rows.append(back_btn("a:cfg"))
+    rows.append(back_btn("a:cat:system"))
     return html, rows
 
 
@@ -222,13 +222,13 @@ async def view_broadcast(ctx: Ctx) -> ViewResult:
     if br.running and cur is not None:
         pct = cur.done * 100 // max(1, cur.total)
         html = f"📣 <b>Идёт рассылка</b>: {pct}%\n\n{cur.summary()}"
-        return html, [[b("🔄 Обновить", "a:bc"), b("⛔️ Остановить", "x:bcstop", "danger")], back_btn("a:home")]
+        return html, [[b("🔄 Обновить", "a:bc"), b("⛔️ Остановить", "x:bcstop", "danger")], back_btn("a:cat:promo")]
     count = len(await br.audience("all"))
     html = f"📣 <b>Рассылка</b>\n\nПолучателей: <b>{count}</b>"
     if cur is not None and cur.finished:
         html += f"\n\n<b>Прошлая рассылка:</b>\n{cur.summary()}"
     return html, [[b("✍️ Создать рассылку", "x:bcnew", "success")],
-                  [b("📨 Forward", "x:bcfwd", "primary")], back_btn("a:home")]
+                  [b("📨 Forward", "x:bcfwd", "primary")], back_btn("a:cat:promo")]
 
 
 @action("bcnew", "broadcast")

@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Baksi Cloud: свои Telegram-боты по подписке</title>
 <meta name="description" content="Генератор ссылок, рассылка по группам, заявки в группу исполнителей, бот связи для спам-блока. Свой бот на своём токене за пару минут.">
-<meta name="theme-color" content="#000000">
+<meta name="theme-color" content="#e7ebfa">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Onest:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
 </head>
@@ -36,19 +36,28 @@
     </div>
     <div class="preview" aria-hidden="true">
       <div class="preview-grid">
-        <div class="pv-side">
-          <div class="on">Мои боты</div><div>Каталог</div><div>Кошелёк</div><div>Рефералы</div>
+        <div class="pv-card">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:12px">
+            <div>
+              <div style="color:var(--ink-2);font-size:14px">Баланс</div>
+              <div style="font-size:46px;font-weight:300;letter-spacing:-.04em;line-height:1.1">$85<span style="color:var(--ink-3)">.00</span></div>
+            </div>
+            <span class="btn primary small">Пополнить</span>
+          </div>
+          <svg class="chart" viewBox="0 0 640 170" style="margin-top:10px">
+            <defs><linearGradient id="pv" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5b5cf0" stop-opacity=".32"/><stop offset="1" stop-color="#9db0ff" stop-opacity="0"/></linearGradient></defs>
+            <line class="grid" x1="0" x2="640" y1="40" y2="40"/><line class="grid" x1="0" x2="640" y1="90" y2="90"/><line class="grid" x1="0" x2="640" y1="140" y2="140"/>
+            <path d="M0,120 C60,120 80,96 140,100 C200,104 220,70 280,74 C340,78 360,118 420,108 C480,98 500,46 560,40 C600,36 620,52 640,48 L640,150 L0,150 Z" fill="url(#pv)"/>
+            <path class="line" d="M0,120 C60,120 80,96 140,100 C200,104 220,70 280,74 C340,78 360,118 420,108 C480,98 500,46 560,40 C600,36 620,52 640,48"/>
+            <circle cx="560" cy="40" r="5" fill="#fff" stroke="#5b5cf0" stroke-width="3"/>
+          </svg>
         </div>
-        <div class="pv-panel">
-          <small>Баланс</small>
-          <div style="font-family: var(--display); font-size: 40px; font-weight: 500; letter-spacing: -.02em">$25<span style="color:#6f756b">.00</span></div>
-          <div class="actions" style="margin-top: 14px"><span class="btn primary small">Пополнить</span><span class="btn small">История</span></div>
-        </div>
-        <div class="pv-panel">
-          <small>Мои боты</small>
-          <div class="pv-bot"><span class="avatar" style="width:30px;height:30px;font-size:13px;border-radius:9px;background:#9B8CFF">L</span><span style="flex:1">Link</span><span class="badge ok">Работает</span></div>
-          <div class="pv-bot"><span class="avatar" style="width:30px;height:30px;font-size:13px;border-radius:9px;background:#FFB547">Р</span><span style="flex:1">Рассылка</span><span class="badge ok">Работает</span></div>
-          <div class="pv-bot"><span class="avatar" style="width:30px;height:30px;font-size:13px;border-radius:9px;background:#6EE7B7">Э</span><span style="flex:1">Экспресс</span><span class="badge warn">Ждёт группу</span></div>
+        <div class="pv-card">
+          <div style="color:var(--ink-2);font-size:14px;margin-bottom:4px">Мои боты</div>
+          <div class="pv-bot"><span class="avatar" style="width:32px;height:32px;font-size:13px;border-radius:10px;background:#9B8CFF">L</span><span style="flex:1">Link</span><span class="badge ok">Работает</span></div>
+          <div class="pv-bot"><span class="avatar" style="width:32px;height:32px;font-size:13px;border-radius:10px;background:#F2A33A">Р</span><span style="flex:1">Рассылка</span><span class="badge ok">Работает</span></div>
+          <div class="pv-bot"><span class="avatar" style="width:32px;height:32px;font-size:13px;border-radius:10px;background:#2FB389">Э</span><span style="flex:1">Экспресс</span><span class="badge warn">Ждёт группу</span></div>
+          <div class="pv-bot"><span class="avatar" style="width:32px;height:32px;font-size:13px;border-radius:10px;background:#4C9BE8">С</span><span style="flex:1">Связь</span><span class="badge ok">Работает</span></div>
         </div>
       </div>
     </div>

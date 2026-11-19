@@ -277,7 +277,10 @@ def create_web(app: App) -> FastAPI:
 
     @web.get("/api/bots/{instance_id}")
     async def bot(instance_id: int, user=Depends(current_user)):
-        return app.instances.view(await own(instance_id, user), with_logs=True)
+        data = app.instances.view(await own(instance_id, user), with_logs=app.is_owner(user["id"]))
+        if not app.is_owner(user["id"]):
+            data.pop("runtime", None)  # техническое: память, pid - только администрации
+        return data
 
     @web.post("/api/bots/{instance_id}/token")
     async def bot_token(request: Request, instance_id: int, body: dict = Body(...), user=Depends(current_user)):
@@ -371,6 +374,9 @@ def create_web(app: App) -> FastAPI:
         revenue_days = await app.db.all(
             "SELECT (created_at / 86400) AS d, SUM(amount) AS s FROM ledger WHERE kind = 'topup' AND created_at >= ? "
             "GROUP BY d ORDER BY d", ts - 30 * 86400)
+        users_days = await app.db.all(
+            "SELECT (created_at / 86400) AS d, COUNT(*) AS n FROM users WHERE created_at >= ? GROUP BY d ORDER BY d",
+            ts - 30 * 86400)
         by_product = await app.db.all(
             "SELECT product, COUNT(*) AS n FROM instances WHERE deleted_at IS NULL AND (forever = 1 OR "
             "(expires_at > ? AND expired_at IS NULL)) GROUP BY product", ts)
@@ -394,6 +400,7 @@ def create_web(app: App) -> FastAPI:
                                    "created_at >= ?", ts - 30 * 86400),
             "balances": await v("SELECT SUM(balance) FROM users"),
             "revenue_days": [{"day": r["d"] * 86400, "sum": r["s"]} for r in revenue_days],
+            "users_days": [{"day": r["d"] * 86400, "n": r["n"]} for r in users_days],
             "by_product": {r["product"]: r["n"] for r in by_product},
             "runtime": app.sup.totals(),
             "uptime": int(time.time() - app.started_at),

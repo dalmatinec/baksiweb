@@ -362,7 +362,8 @@ async def bot_card(target: Message | CallbackQuery, app: App, instance_id: int, 
         rows.append([b("▶️ Запустить", f"resume:{instance_id}", style="success") if v["paused"]
                      else b("⏸ Остановить", f"pause:{instance_id}"),
                      b("🔁 Перезапустить", f"restart:{instance_id}")])
-        rows.append([b("🔑 Сменить токен", f"tok:{instance_id}"), b("📜 Логи", f"logs:{instance_id}")])
+        rows.append([b("🔑 Сменить токен", f"tok:{instance_id}"),
+                     b("📜 Логи", f"logs:{instance_id}") if app.is_owner(uid) else None])
     bool_settings = [s for s in v["settings_schema"] if s["type"] == "bool"]
     for s in bool_settings:
         on = v["settings"].get(s["key"], s["default"])
@@ -437,10 +438,8 @@ async def toggle_setting(call: CallbackQuery, app: App, state: FSMContext) -> No
 @router.callback_query(F.data.startswith("logs:"))
 async def logs(call: CallbackQuery, app: App) -> None:
     iid = int(call.data.split(":")[1])
-    try:
-        await app.instances.get(iid, call.from_user.id)
-    except InstanceError as exc:
-        await call.answer(str(exc), show_alert=True)
+    if not app.is_owner(call.from_user.id):
+        await call.answer()
         return
     lines = app.sup.logs(iid, 25)
     body = esc("\n".join(line[-160:] for line in lines))[-3500:] or "Логов пока нет."

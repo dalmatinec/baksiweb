@@ -6,7 +6,7 @@ from pathlib import Path
 from aiogram.types import Message
 
 from ...backup import restore_backup
-from ...jobs import send_backup
+from ...jobs import IN_PLATFORM, auto_backup_enabled, send_backup
 from ...media import TELEGRAM_DOWNLOAD_LIMIT
 from ...store import now
 from .core import Ctx, InputError, Rows, ViewResult, action, b, back_btn, fmt_date, on_input, view, yes_no
@@ -105,7 +105,7 @@ def back_cb(back: str) -> str:
 async def view_settings(ctx: Ctx) -> ViewResult:
     btns = [b(title, f"a:setg:{g}") for g, (title, _, _) in SETTING_GROUPS.items()]
     rows: Rows = [btns[i:i + 2] for i in range(0, len(btns), 2)]
-    rows.append(back_btn("a:cfg"))
+    rows.append(back_btn("a:cat:system"))
     return "⚙️ <b>Настройки</b>\nВыбери раздел.", rows
 
 
@@ -129,7 +129,7 @@ async def view_setting_group(ctx: Ctx, group: str) -> ViewResult:
 async def view_protection(ctx: Ctx) -> ViewResult:
     s = ctx.app.store.setting
     rows: Rows = [[b(f"{title}: {s(key)}", f"x:setv:{key}:prot")] for key, (title, _, _) in PROTECTION.items()]
-    rows.append(back_btn("a:cfg"))
+    rows.append(back_btn("a:cat:system"))
     html = ("🛡 <b>Защита</b>\n\n"
             f"Больше <b>{s('flood_limit')}</b> нажатий за <b>{s('flood_window')}</b> сек - бот просит не спешить. "
             f"После <b>{s('flood_strikes')}</b> раз - бан на <b>{s('flood_ban_minutes')}</b> мин. На админов не действует.")
@@ -200,14 +200,26 @@ async def in_log_chat(ctx: Ctx, message: Message):
 @view("bak", "backup")
 async def view_backup(ctx: Ctx) -> ViewResult:
     s = ctx.app.store.setting
+    auto = auto_backup_enabled(ctx.app)
     html = ("💾 <b>Бэкап</b>: база и все картинки одним архивом\n\n"
-            f"Каждый день в {s('backup_hour')}:00, последний: {s('last_backup_day', 'ещё не было')}\n"
-            f"Копия уходит {'в канал логов' if ctx.app.log_chat else 'владельцу в личку'}.\n"
-            f"На сервере: <code>{escape(str(ctx.app.config.backup_dir.resolve()))}</code> (3 последних).")
+            "Зачем: если бота удалят, сломают настройки или случайно сотрут кнопки, из архива всё "
+            "возвращается за минуту, вместе с пользователями и рекламой.\n\n"
+            f"Присылать архив каждый день: <b>{'да' if auto else 'нет'}</b>"
+            + (f" (в {s('backup_hour', 4)}:00, {'в канал логов' if ctx.app.log_chat else 'вам в личку'})" if auto else "")
+            + f"\nПоследний: {s('last_backup_day', 'ещё не было')}")
+    if not IN_PLATFORM:
+        html += f"\nНа сервере: <code>{escape(str(ctx.app.config.backup_dir.resolve()))}</code> (3 последних)."
     rows = [[b("💾 Сделать бэкап сейчас", "x:bakgo", "success")],
+            [b(f"📬 Каждый день: {'вкл' if auto else 'выкл'}", "x:baktog")],
             [b("♻️ Восстановить из архива", "x:bakrest", "danger")],
-            back_btn("a:cfg")]
+            back_btn("a:cat:system")]
     return html, rows
+
+
+@action("baktog", "backup")
+async def act_backup_toggle(ctx: Ctx):
+    await ctx.app.set_setting("auto_backup", not auto_backup_enabled(ctx.app))
+    return "a:bak"
 
 
 @action("bakgo", "backup")
@@ -265,4 +277,4 @@ async def view_log(ctx: Ctx, page: str = "0") -> ViewResult:
         nav.append(b("◀️ Новее", f"a:log:{p - 1}"))
     if len(rows_db) > size:
         nav.append(b("Старее ▶️", f"a:log:{p + 1}"))
-    return "📜 <b>Журнал</b> (хранится 90 дней)\n\n" + ("\n".join(lines) or "пусто"), [nav, back_btn("a:cfg")]
+    return "📜 <b>Журнал</b> (хранится 90 дней)\n\n" + ("\n".join(lines) or "пусто"), [nav, back_btn("a:cat:system")]

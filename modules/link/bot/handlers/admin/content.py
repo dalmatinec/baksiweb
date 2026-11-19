@@ -55,7 +55,7 @@ async def view_texts(ctx: Ctx) -> ViewResult:
     rows: Rows = [[b(title, f"a:txg:{g}")] for g, (title, _) in GROUPS.items()]
     rows.append([b("🔘 Кнопки бота", "a:btns")])
     rows.append([b("✨ Проверить премиум-эмодзи", "x:prem")])
-    rows.append(back_btn("a:cfg"))
+    rows.append(back_btn("a:cat:content"))
     return ("📝 <b>Тексты и кнопки</b>\n\nВсё, что видит пользователь. Выбери раздел.\n"
             "Можно писать с форматированием и премиум-эмодзи."), rows
 

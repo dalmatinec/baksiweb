@@ -107,6 +107,114 @@ const STATUS = {
 const badge = (b) => h("span", { class: "badge " + (STATUS[b.status] || "idle") }, b.status_text);
 const avatar = (b) => h("span", { class: "avatar", style: `background:${b.color}` }, (b.title || "?")[0]);
 
+// ---------- графики (SVG, без библиотек) ----------
+const SVGNS = "http://www.w3.org/2000/svg";
+function svg(tag, attrs, ...kids) {
+  const el = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v != null) el.setAttribute(k, v);
+  kids.flat(Infinity).forEach((k) => k && el.append(k));
+  return el;
+}
+let gradId = 0;
+
+// Плавная линия с заливкой. points: [{x: label, y: number, tip: string}]
+function areaChart(points, { height = 220, format = (v) => v, ticks = 4 } = {}) {
+  const W = 640, H = height, L = 46, R = 10, T = 14, B = 26;
+  const max = Math.max(1, ...points.map((p) => p.y)) * 1.12;
+  const X = (i) => L + (points.length < 2 ? (W - L - R) / 2 : i * (W - L - R) / (points.length - 1));
+  const Y = (v) => T + (H - T - B) * (1 - v / max);
+  const id = "g" + (++gradId);
+  const pts = points.map((p, i) => [X(i), Y(p.y)]);
+  let d = "";
+  pts.forEach(([x, y], i) => {
+    if (!i) { d = `M${x},${y}`; return; }
+    const [px, py] = pts[i - 1]; const cx = (px + x) / 2;
+    d += ` C${cx},${py} ${cx},${y} ${x},${y}`;
+  });
+  const area = `${d} L${pts[pts.length - 1][0]},${H - B} L${pts[0][0]},${H - B} Z`;
+  const grid = Array.from({ length: ticks + 1 }, (_, i) => {
+    const v = max / 1.12 * i / ticks; const y = Y(v);
+    return [svg("line", { class: "grid", x1: L, x2: W - R, y1: y, y2: y }), svg("text", { class: "axis", x: L - 8, y: y + 4, "text-anchor": "end" }, document.createTextNode(format(v)))];
+  });
+  const step = Math.max(1, Math.ceil(points.length / 6));
+  const labels = points.map((p, i) => (i % step === 0 || i === points.length - 1) ? svg("text", { class: "axis", x: X(i), y: H - 6, "text-anchor": "middle" }, document.createTextNode(p.x)) : null);
+  const dot = svg("circle", { r: 5, fill: "#fff", stroke: "var(--accent)", "stroke-width": 3, cx: 0, cy: 0, opacity: 0 });
+  const guide = svg("line", { x1: 0, x2: 0, y1: T, y2: H - B, stroke: "rgba(91,92,240,.35)", "stroke-dasharray": "3 4", opacity: 0 });
+  const root = svg("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "График" },
+    svg("defs", {}, svg("linearGradient", { id, x1: 0, y1: 0, x2: 0, y2: 1 },
+      svg("stop", { offset: "0%", "stop-color": "#5b5cf0", "stop-opacity": ".32" }), svg("stop", { offset: "100%", "stop-color": "#9db0ff", "stop-opacity": "0" }))),
+    grid, svg("path", { d: area, fill: `url(#${id})` }), svg("path", { class: "line", d }), guide, dot, labels);
+  const tip = h("div", { class: "chart-tip", hidden: true });
+  const box = h("div", { class: "chart-box" }, root, tip);
+  root.addEventListener("pointermove", (e) => {
+    const r = root.getBoundingClientRect();
+    const x = (e.clientX - r.left) / r.width * W;
+    let i = Math.round((x - L) / ((W - L - R) / Math.max(1, points.length - 1)));
+    i = Math.max(0, Math.min(points.length - 1, i));
+    const [px, py] = pts[i];
+    dot.setAttribute("cx", px); dot.setAttribute("cy", py); dot.setAttribute("opacity", 1);
+    guide.setAttribute("x1", px); guide.setAttribute("x2", px); guide.setAttribute("opacity", 1);
+    tip.hidden = false; tip.textContent = points[i].tip;
+    tip.style.left = (px / W * r.width) + "px"; tip.style.top = (py / H * r.height) + "px";
+  });
+  root.addEventListener("pointerleave", () => { tip.hidden = true; dot.setAttribute("opacity", 0); guide.setAttribute("opacity", 0); });
+  return box;
+}
+
+function barChart(points, { height = 150 } = {}) {
+  const W = 640, H = height, B = 22, T = 8;
+  const max = Math.max(1, ...points.map((p) => p.y));
+  const bw = (W / points.length) * 0.62;
+  const step = Math.max(1, Math.ceil(points.length / 6));
+  return svg("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Столбцы по дням" },
+    points.map((p, i) => {
+      const x = i * W / points.length + (W / points.length - bw) / 2;
+      const hgt = p.y ? Math.max(4, (H - B - T) * p.y / max) : 3;
+      return [svg("rect", { class: "bar" + (p.y ? "" : " dim"), x, y: H - B - hgt, width: bw, height: hgt, rx: Math.min(6, bw / 2) },
+        svg("title", {}, document.createTextNode(p.tip))),
+      (i % step === 0) ? svg("text", { class: "axis", x: x + bw / 2, y: H - 6, "text-anchor": "middle" }, document.createTextNode(p.x)) : null];
+    }));
+}
+
+function donut(segments, { size = 170, label = "", sub = "" } = {}) {
+  const total = segments.reduce((a, s) => a + s.value, 0);
+  const R = 62, C = 2 * Math.PI * R;
+  let offset = 0;
+  const arcs = total ? segments.filter((s) => s.value).map((s) => {
+    const len = C * s.value / total;
+    const el = svg("circle", { cx: 85, cy: 85, r: R, fill: "none", stroke: s.color, "stroke-width": 20, "stroke-dasharray": `${Math.max(0, len - 3)} ${C}`, "stroke-dashoffset": -offset, transform: "rotate(-90 85 85)", "stroke-linecap": "round" });
+    offset += len;
+    return el;
+  }) : [svg("circle", { cx: 85, cy: 85, r: R, fill: "none", stroke: "rgba(21,23,46,.08)", "stroke-width": 20 })];
+  return svg("svg", { viewBox: "0 0 170 170", width: size, height: size, role: "img", "aria-label": label + " " + sub },
+    arcs,
+    svg("text", { x: 85, y: 82, "text-anchor": "middle", "font-size": 30, "font-weight": 300, fill: "var(--ink)" }, document.createTextNode(label)),
+    svg("text", { x: 85, y: 104, "text-anchor": "middle", "font-size": 12, fill: "var(--ink-2)" }, document.createTextNode(sub)));
+}
+
+function ring(pct, color, text) {
+  const R = 21, C = 2 * Math.PI * R;
+  return svg("svg", { class: "ring", viewBox: "0 0 52 52", role: "img", "aria-label": text },
+    svg("circle", { class: "bg", cx: 26, cy: 26, r: R }),
+    svg("circle", { class: "fg", cx: 26, cy: 26, r: R, stroke: color, "stroke-dasharray": `${C * Math.max(0, Math.min(1, pct))} ${C}` }),
+    svg("text", { x: 26, y: 30.5, "text-anchor": "middle" }, document.createTextNode(text)));
+}
+
+const dayLabel = (ts) => new Date(ts * 1000).toLocaleDateString("ru-RU", { day: "numeric", month: "short" }).replace(".", "");
+function lastDays(n) {
+  const today = Math.floor(Date.now() / 86400000) * 86400;
+  return Array.from({ length: n }, (_, i) => today - (n - 1 - i) * 86400);
+}
+const shortMoney = (c) => { const v = c / 100; return "$" + (v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + "k" : Math.round(v)); };
+
+function daysLeft(b) {
+  if (b.forever) return { pct: 1, text: "∞", hint: "навсегда" };
+  if (!b.expires_at) return { pct: 0, text: "—", hint: "" };
+  const left = Math.max(0, (b.expires_at - Date.now() / 1000) / 86400);
+  const total = b.trial ? 3 : (b.plan_days || 30);
+  return { pct: left / total, text: left >= 1 ? String(Math.floor(left)) : "<1", hint: left >= 1 ? "дн. осталось" : "меньше дня" };
+}
+
 // ---------- каркас ----------
 function navItems() {
   const items = [
@@ -158,7 +266,7 @@ function renderLogin(expired) {
   clearInterval(S.timer);
   const hub = S.cfg && S.cfg.hub;
   const box = h("div", { class: "box" },
-    h("span", { class: "logo-mark", style: "width:56px;height:56px;font-size:26px;border-radius:16px" }, "B"),
+    h("span", { class: "logo-mark", style: "width:56px;height:56px;font-size:26px;border-radius:18px" }, "B"),
     h("h1", {}, S.cfg ? S.cfg.brand : "Кабинет"),
     h("p", { class: "muted" }, expired ? "Ссылка для входа устарела или уже использована. Получите новую в боте." :
       "Вход без пароля: бот пришлёт одноразовую ссылку в Telegram."),
@@ -183,26 +291,52 @@ async function loadMe() {
 }
 
 async function pageHome() {
-  await loadMe();
+  const [w] = await Promise.all([api("GET", "/api/wallet"), loadMe()]);
   const problems = S.bots.filter((b) => ["token_invalid", "crashed", "expired", "setup", "waiting_bind"].includes(b.status));
   const running = S.bots.filter((b) => b.status === "running").length;
-  const list = S.bots.length
-    ? h("div", { class: "panel flush" }, h("div", { class: "list" }, S.bots.map((b) =>
-      h("a", { class: "row", href: `#/bot/${b.id}` }, avatar(b),
-        h("span", { class: "grow" },
-          h("span", { class: "title" }, b.title, b.bot_username ? h("span", { class: "muted", style: "font-weight:400" }, "  @" + b.bot_username) : null),
-          h("span", { class: "meta" }, b.forever ? "Навсегда" : (b.trial ? "Пробный до " : "До ") + date(b.expires_at))),
-        badge(b)))))
-    : h("div", { class: "panel empty" }, h("p", {}, "У вас пока нет ботов. Выберите первого в каталоге: запуск займёт пару минут."),
-      h("a", { class: "btn primary", href: "#/catalog" }, "Открыть каталог"));
+  // баланс по дням за 30 дней из истории операций
+  const ops = [...w.items].sort((a, b) => a.created_at - b.created_at || a.id - b.id);
+  const days = lastDays(30);
+  let bal = ops.length ? ops[0].balance_after - ops[0].amount : S.me.balance;
+  let k = 0;
+  const series = days.map((day) => {
+    while (k < ops.length && ops[k].created_at < day + 86400) { bal = ops[k].balance_after; k += 1; }
+    return { x: dayLabel(day), y: Math.max(0, bal), tip: `${dayLabel(day)}: ${money(bal)}` };
+  });
+  const spent = w.items.filter((o) => o.amount < 0 && o.created_at > Date.now() / 1000 - 30 * 86400).reduce((a, o) => a - o.amount, 0);
+  const color = { ok: "var(--ok)", warn: "var(--warn)", bad: "var(--bad)", idle: "var(--ink-3)" };
+  const cards = S.bots.map((b) => {
+    const dl = daysLeft(b);
+    return h("a", { class: "bot-card", href: `#/bot/${b.id}` },
+      h("div", { class: "top" }, avatar(b), h("div", { style: "min-width:0" }, h("div", { class: "name" }, b.title), h("div", { class: "user" }, b.bot_username ? "@" + b.bot_username : "токен не подключён"))),
+      h("div", { class: "bottom" }, h("div", { style: "display:grid;gap:6px" }, badge(b), h("span", { class: "hint" }, b.forever ? "Бессрочно" : (b.trial ? "Пробный до " : "До ") + date(b.expires_at))),
+        h("div", { style: "display:grid;justify-items:center" }, ring(dl.pct, color[STATUS[b.status] || "idle"], dl.text), h("span", { class: "hint", style: "font-size:11px" }, dl.hint))));
+  });
+  cards.push(h("a", { class: "bot-card", href: "#/catalog", style: "place-content:center;justify-items:center;text-align:center;min-height:150px;border-style:dashed" },
+    h("span", { style: "font-size:30px;font-weight:300;line-height:1" }, "+"), h("b", {}, S.bots.length ? "Ещё один бот" : "Первый бот"), h("span", { class: "hint" }, "запуск за пару минут")));
   shell([
-    head("Мои боты", h("a", { class: "btn primary", href: "#/catalog" }, "Новый бот")),
-    h("div", { class: "balance" },
-      h("div", {}, h("div", { class: "k" }, "Баланс"), h("div", { class: "v" }, moneyBig(S.me.balance))),
-      h("div", { class: "actions" }, h("a", { class: "btn primary", href: "#/wallet" }, "Пополнить"),
-        h("span", { class: "muted" }, S.bots.length ? `Работают ${running} из ${S.bots.length}` : ""))),
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, `Привет${S.me.first_name ? ", " + S.me.first_name : ""}`),
+      h("div", { class: "sub" }, S.bots.length ? `Работают ${running} из ${S.bots.length} ботов` : "Здесь будут ваши боты")),
+      h("a", { class: "btn primary", href: "#/catalog" }, "Новый бот")),
     problems.length ? h("div", { class: "alert warn" }, `Требуют внимания: ${problems.map((b) => `${b.title}${b.bot_username ? " @" + b.bot_username : ""}`).join(", ")}. Откройте бота, там подсказка, что сделать.`) : null,
-    list,
+    h("div", { class: "dash" },
+      h("div", { class: "stack" },
+        h("div", { class: "balance" },
+          h("div", { class: "balance-top" },
+            h("div", {}, h("div", { class: "k" }, "Баланс"), h("div", { class: "v" }, moneyBig(S.me.balance)),
+              h("div", { class: "hint" }, spent ? `Потрачено за 30 дней: ${money(spent)}` : "Списаний за 30 дней не было")),
+            h("div", { class: "actions" }, h("a", { class: "btn primary", href: "#/wallet" }, "Пополнить"), h("a", { class: "btn", href: "#/wallet" }, "История"))),
+          ops.length ? areaChart(series, { height: 190, format: shortMoney }) : null),
+        h("div", { class: "panel" }, h("h2", {}, "Мои боты"), h("div", { class: "bot-cards" }, cards))),
+      h("div", { class: "stack" },
+        h("div", { class: "panel flush" }, h("h2", {}, "Последние операции", h("a", { href: "#/wallet", style: "font-size:14px;font-weight:500" }, "Все")),
+          w.items.length ? h("div", { class: "list" }, w.items.slice(0, 7).map((o) => h("div", { class: "row", style: "cursor:default" },
+            h("span", { class: "avatar", style: `width:36px;height:36px;border-radius:12px;font-size:15px;background:${o.amount > 0 ? "#2fb36d" : "#5b5cf0"}` }, o.amount > 0 ? "+" : "−"),
+            h("span", { class: "grow" }, h("span", { class: "title", style: "font-weight:500" }, o.note), h("span", { class: "meta" }, dateTime(o.created_at))),
+            h("b", { class: o.amount > 0 ? "pos" : "" }, (o.amount > 0 ? "+" : "") + money(o.amount)))))
+            : h("div", { class: "empty" }, "Операций пока нет.")),
+        h("a", { class: "tile accent", href: "#/referrals", style: "text-decoration:none" }, h("span", { class: "k" }, "Рефералы"),
+          h("span", { style: "font-size:18px;font-weight:600" }, "Приглашайте друзей"), h("span", { class: "s" }, "Ссылка и бонусы - в разделе «Рефералы»")))),
   ]);
 }
 
@@ -247,7 +381,7 @@ async function pageProduct(slug, instanceId) {
       summary.replaceChildren(...[
         h("div", {}, h("span", {}, "Тариф"), h("span", {}, `${q.label} · ${money(q.price)}`)),
         q.promo ? h("div", {}, h("span", {}, `Промокод ${q.promo}`), h("span", {}, "−" + money(q.discount))) : null,
-        q.promo_error ? h("div", {}, h("span", {}, "Промокод"), h("span", { style: "color:var(--coral)" }, q.promo_error)) : null,
+        q.promo_error ? h("div", {}, h("span", {}, "Промокод"), h("span", { style: "color:var(--bad)" }, q.promo_error)) : null,
         h("div", {}, h("span", {}, "К оплате"), h("b", {}, money(q.total))),
         h("div", {}, h("span", {}, "На балансе"), h("span", {}, money(q.balance)))].filter(Boolean));
       payBtn.textContent = lack > 0 ? `Пополнить на ${money(Math.max(lack, 100))} и оплатить` : `Оплатить ${money(q.total)} с баланса`;
@@ -271,8 +405,8 @@ async function pageProduct(slug, instanceId) {
       h("div", {}, h("h1", {}, instanceId ? `Продление: ${p.title}` : p.title), h("div", { class: "muted" }, p.tagline)))),
     h("div", { class: "grid2" },
       h("div", { class: "panel" }, h("p", {}, p.description),
-        p.how.length ? [h("h2", { style: "margin:18px 0 10px;font-size:16px" }, "Как работает"), h("ol", { style: "margin:0;padding-left:20px;display:grid;gap:6px;color:#cfd5c9" }, p.how.map((s) => h("li", {}, s)))] : null,
-        p.features.length ? [h("h2", { style: "margin:18px 0 10px;font-size:16px" }, "Возможности"), h("ul", { style: "margin:0;padding-left:20px;display:grid;gap:6px;color:#cfd5c9" }, p.features.map((s) => h("li", {}, s)))] : null),
+        p.how.length ? [h("h2", { style: "margin:18px 0 10px;font-size:16px" }, "Как работает"), h("ol", { style: "margin:0;padding-left:20px;display:grid;gap:6px;color:var(--ink-2)" }, p.how.map((s) => h("li", {}, s)))] : null,
+        p.features.length ? [h("h2", { style: "margin:18px 0 10px;font-size:16px" }, "Возможности"), h("ul", { style: "margin:0;padding-left:20px;display:grid;gap:6px;color:var(--ink-2)" }, p.features.map((s) => h("li", {}, s)))] : null),
       h("div", { class: "panel", style: "display:grid;gap:16px" },
         h("h2", { style: "margin:0" }, "Срок подписки"), plans,
         h("div", { style: "display:flex;gap:8px" }, promoInput,
@@ -317,7 +451,7 @@ async function pageBot(id) {
   };
 
   const alerts = [];
-  if (!b.has_token) alerts.push(h("div", { class: "panel", style: "display:grid;gap:12px;border-color:var(--lime)" }, h("h2", { style: "margin:0" }, "Подключите своего бота"), tokenForm()));
+  if (!b.has_token) alerts.push(h("div", { class: "panel", style: "display:grid;gap:12px;border:2px solid var(--accent)" }, h("h2", { style: "margin:0" }, "Подключите своего бота"), tokenForm()));
   if (b.status === "token_invalid") alerts.push(h("div", { class: "alert bad" }, h("b", {}, "Telegram отклонил токен"), "Бота удалили или сбросили токен в @BotFather. Данные и настройки сохранены: вставьте новый токен.", tokenForm()));
   if (b.status === "expired") alerts.push(h("div", { class: "alert bad" }, h("b", {}, "Подписка закончилась"), `Бот остановлен, данные хранятся ещё некоторое время.`, h("a", { class: "btn primary", href: `#/renew/${b.product}/${b.id}` }, "Продлить")));
   if (b.status === "crashed") alerts.push(h("div", { class: "alert bad" }, h("b", {}, "Бот несколько раз упал при запуске"), b.status_note || "Мы уже получили уведомление. Попробуйте перезапустить или посмотрите события ниже."));
@@ -379,21 +513,22 @@ async function pageBot(id) {
           b.has_token ? h("button", { class: "btn", onclick: (e) => act(e.currentTarget, () => api("POST", `/api/bots/${id}/action`, { action: "restart" }), "Перезапускаю").then(() => setTimeout(route, 1500)) }, "Перезапустить") : null,
           b.has_token ? h("button", { class: "btn", onclick: (e) => act(e.currentTarget, () => api("POST", `/api/bots/${id}/action`, { action: b.paused ? "resume" : "pause" }), b.paused ? "Запускаю" : "Остановлен").then(() => setTimeout(route, 800)) }, b.paused ? "Запустить" : "Остановить") : null,
           b.needs_bind ? h("button", { class: "btn", onclick: (e) => act(e.currentTarget, () => api("POST", `/api/bots/${id}/action`, { action: "bind_code" }), "Новый код создан").then(route) }, "Новый код /bind") : null),
-        b.has_token && b.status !== "token_invalid" ? h("details", { style: "margin-top:16px" }, h("summary", { style: "cursor:pointer;color:var(--mist)" }, "Сменить токен"), h("div", { style: "margin-top:12px" }, tokenForm())) : null,
-        rt.running ? h("p", { class: "hint", style: "margin-top:14px" }, `Работает ${Math.floor(rt.uptime / 3600)} ч ${Math.floor(rt.uptime % 3600 / 60)} мин · память ${rt.rss_mb} из ${rt.mem_limit_mb} МБ`) : null)),
+        b.has_token && b.status !== "token_invalid" ? h("details", { style: "margin-top:16px" }, h("summary", { style: "cursor:pointer;color:var(--ink-2)" }, "Сменить токен"), h("div", { style: "margin-top:12px" }, tokenForm())) : null,
+        rt.running && b.logs ? h("p", { class: "hint", style: "margin-top:14px" }, `Работает ${Math.floor(rt.uptime / 3600)} ч ${Math.floor(rt.uptime % 3600 / 60)} мин · память ${rt.rss_mb} из ${rt.mem_limit_mb} МБ`) : null)),
     settingsPanel,
-    h("div", { class: "panel" }, h("h2", {}, "События", h("button", { class: "btn small", onclick: async () => { const r = await api("GET", `/api/bots/${id}`); logsBox.textContent = (r.logs || []).join("\n") || "Событий пока нет."; logsBox.scrollTop = logsBox.scrollHeight; } }, "Обновить")), logsBox),
-    h("div", { class: "panel" }, h("h2", {}, "Бэкап"),
-      h("p", { class: "muted", style: "margin-bottom:14px" }, "Все данные бота одним архивом: пользователи, настройки, тексты. Мы делаем бэкап каждую ночь, а здесь можно скачать свой."),
-      h("div", { class: "actions" },
-        h("button", { class: "btn", onclick: async (e) => {
-          const res = await act(e.currentTarget, () => api("GET", `/api/bots/${id}/backup`, undefined, true));
-          if (!res) return;
-          const blob = await res.blob();
-          const a = h("a", { href: URL.createObjectURL(blob), download: `backup-${b.bot_username || id}.zip` });
-          document.body.append(a); a.click(); a.remove();
-        } }, "Скачать бэкап"),
-        h("label", { class: "btn" }, "Восстановить из файла", restoreInput))),
+    b.logs ? h("div", { class: "panel" }, h("h2", {}, "События (видно только администрации)", h("button", { class: "btn small", onclick: async () => { const r = await api("GET", `/api/bots/${id}`); logsBox.textContent = (r.logs || []).join("\n") || "Событий пока нет."; logsBox.scrollTop = logsBox.scrollHeight; } }, "Обновить")), logsBox) : null,
+    h("details", { class: "panel more" }, h("summary", {}, "Бэкап (по желанию)"),
+      h("div", { style: "display:grid;gap:14px;margin-top:14px" },
+        h("p", { class: "muted" }, "Мы и так сохраняем данные всех ботов каждую ночь. Свой архив пригодится, если хотите держать копию у себя: перед большими изменениями, перед сменой бота или просто на всякий случай. Внутри пользователи, кнопки, тексты и настройки."),
+        h("div", { class: "actions" },
+          h("button", { class: "btn", onclick: async (e) => {
+            const res = await act(e.currentTarget, () => api("GET", `/api/bots/${id}/backup`, undefined, true));
+            if (!res) return;
+            const blob = await res.blob();
+            const a = h("a", { href: URL.createObjectURL(blob), download: `backup-${b.bot_username || id}.zip` });
+            document.body.append(a); a.click(); a.remove();
+          } }, "Скачать архив"),
+          h("label", { class: "btn" }, "Восстановить из архива", restoreInput)))),
     h("div", { class: "panel" }, h("h2", {}, "Удаление"),
       h("p", { class: "muted", style: "margin-bottom:14px" }, "Бот остановится сразу, оставшиеся дни не возвращаются. Данные удаляются через 3 дня."),
       h("button", { class: "btn danger", onclick: async (e) => {
@@ -441,7 +576,7 @@ async function pageWallet() {
     h("div", { class: "panel flush" }, h("h2", { style: "padding:18px 18px 0" }, "История"),
       w.items.length ? h("div", { class: "scroll" }, h("table", { class: "t" }, h("tbody", {}, w.items.map((o) => h("tr", {},
         h("td", { class: "muted" }, dateTime(o.created_at)), h("td", {}, o.note),
-        h("td", { style: `text-align:right;font-weight:600;color:${o.amount > 0 ? "var(--lime)" : "var(--paper)"}` }, (o.amount > 0 ? "+" : "") + money(o.amount)))))))
+        h("td", { style: `text-align:right;font-weight:600;color:${o.amount > 0 ? "var(--ok)" : "var(--ink)"}` }, (o.amount > 0 ? "+" : "") + money(o.amount)))))))
         : h("div", { class: "empty" }, "Операций пока нет.")),
   ]);
 }
@@ -461,25 +596,40 @@ async function pageReferrals() {
 
 // ---------- админка ----------
 async function pageAdmin() {
-  const [s, probs] = await Promise.all([api("GET", "/api/admin/stats"), api("GET", "/api/admin/instances?problems=1&limit=20")]);
-  const byDay = Object.fromEntries(s.revenue_days.map((d) => [d.day, d.sum]));
-  const today = Math.floor(Date.now() / 86400000) * 86400;
-  const days = Array.from({ length: 30 }, (_, i) => { const day = today - (29 - i) * 86400; return { day, sum: byDay[day] || 0 }; });
-  const max = Math.max(1, ...days.map((d) => d.sum));
-  const tile = (k, v, sub) => h("div", { class: "tile" }, h("span", { class: "k" }, k), h("span", { class: "v" }, v), sub ? h("span", { class: "s" }, sub) : null);
+  const [s, probs, pays] = await Promise.all([api("GET", "/api/admin/stats"), api("GET", "/api/admin/instances?problems=1&limit=20"),
+    api("GET", "/api/admin/payments?limit=6"), S.catalog ? null : loadCatalog().catch(() => null)]);
+  const days = lastDays(30);
+  const rev = Object.fromEntries(s.revenue_days.map((d) => [d.day, d.sum]));
+  const usr = Object.fromEntries(s.users_days.map((d) => [d.day, d.n]));
+  const revSeries = days.map((d) => ({ x: dayLabel(d), y: rev[d] || 0, tip: `${dayLabel(d)}: ${money(rev[d] || 0)}` }));
+  const usrSeries = days.map((d) => ({ x: dayLabel(d), y: usr[d] || 0, tip: `${dayLabel(d)}: +${usr[d] || 0}` }));
+  const colors = Object.fromEntries((S.catalog || []).map((p) => [p.slug, p.color]));
+  const titles = Object.fromEntries((S.catalog || []).map((p) => [p.slug, p.title]));
+  const segs = Object.entries(s.by_product).map(([slug, n]) => ({ label: titles[slug] || slug, value: n, color: colors[slug] || "#9db0ff" }));
+  const totalSubs = segs.reduce((a, x) => a + x.value, 0);
+  const tile = (cls, k, v, sub) => h("div", { class: "tile " + cls }, h("span", { class: "k" }, k), h("span", { class: "v" }, v), sub ? h("span", { class: "s" }, sub) : null);
+  const st = { paid: ["ok", "Оплачен"], active: ["warn", "Ждёт"], expired: ["", "Истёк"] };
   shell([
-    head("Обзор"),
+    h("div", { class: "page-head" }, h("div", {}, h("h1", {}, "Обзор"), h("div", { class: "sub" }, `Платформа работает ${Math.floor(s.uptime / 86400)} дн. ${Math.floor(s.uptime % 86400 / 3600)} ч`))),
     h("div", { class: "tiles" },
-      tile("Пополнения сегодня", moneyBig(s.topup_today), `за 30 дней ${money(s.topup_month)}`),
-      tile("Продажи за 30 дней", moneyBig(s.sales_month), `на балансах клиентов ${money(s.balances)}`),
-      tile("Активные подписки", s.active, `пробных ${s.trials}`),
-      tile("Истекают за 3 дня", s.expiring, `без автопродления ${s.expiring_no_renew}`),
-      tile("Клиенты", s.users, `сегодня +${s.users_today}`),
-      tile("Процессы", s.runtime.running, `память ${s.runtime.rss_mb} МБ`)),
-    h("div", { class: "panel" }, h("h2", {}, "Пополнения за 30 дней"),
-      s.revenue_days.length ? h("div", { class: "bars", role: "img", "aria-label": "Пополнения по дням за 30 дней" }, days.map((d) => h("div", { style: `height:${d.sum ? Math.max(4, d.sum / max * 100) : 1}%;${d.sum ? "" : "opacity:.25"}`, title: `${date(d.day)}: ${money(d.sum)}` })))
-        : h("p", { class: "muted" }, "Пополнений пока не было.")),
-    h("div", { class: "panel flush" }, h("h2", { style: "padding:18px 18px 0" }, "Требуют внимания"),
+      tile("dark", "Пополнения сегодня", moneyBig(s.topup_today), `за 30 дней ${money(s.topup_month)}`),
+      tile("accent", "Продажи за 30 дней", moneyBig(s.sales_month), `на балансах ${money(s.balances)}`),
+      tile("", "Активные подписки", s.active, `пробных ${s.trials} · истекают за 3 дня ${s.expiring}`),
+      tile("", "Клиенты", s.users, `сегодня +${s.users_today} · процессов ${s.runtime.running}, ${s.runtime.rss_mb} МБ`)),
+    h("div", { class: "dash" },
+      h("div", { class: "stack" },
+        h("div", { class: "panel" }, h("h2", {}, "Пополнения за 30 дней", h("span", { class: "hint" }, money(s.topup_month))), areaChart(revSeries, { format: shortMoney })),
+        h("div", { class: "panel" }, h("h2", {}, "Новые клиенты", h("span", { class: "hint" }, `+${s.users_days.reduce((a, d) => a + d.n, 0)} за 30 дней`)), barChart(usrSeries))),
+      h("div", { class: "stack" },
+        h("div", { class: "panel" }, h("h2", {}, "Подписки по ботам"),
+          h("div", { style: "display:grid;justify-items:center;gap:16px" }, donut(segs, { label: String(totalSubs), sub: "активных" }),
+            h("div", { class: "legend", style: "width:100%" }, segs.length ? segs.map((x) => h("div", {}, h("i", { style: `background:${x.color}` }), x.label, h("b", {}, x.value))) : h("span", { class: "muted" }, "Подписок пока нет")))),
+        h("div", { class: "panel flush" }, h("h2", {}, "Последние платежи", h("a", { href: "#/admin/payments", style: "font-size:14px;font-weight:500" }, "Все")),
+          pays.items.length ? h("div", { class: "list" }, pays.items.map((i) => h("a", { class: "row", href: `#/admin/user/${i.user_id}` },
+            h("span", { class: "grow" }, h("span", { class: "title", style: "font-weight:500" }, i.username ? "@" + i.username : String(i.user_id)), h("span", { class: "meta" }, dateTime(i.created_at))),
+            h("span", { style: "display:grid;justify-items:end;gap:4px" }, h("b", {}, money(i.amount)), h("span", { class: "badge " + (st[i.status] || [""])[0] }, (st[i.status] || [0, i.status])[1])))))
+            : h("div", { class: "empty" }, "Платежей пока нет.")))),
+    h("div", { class: "panel flush" }, h("h2", {}, "Требуют внимания"),
       probs.items.length ? h("div", { class: "scroll" }, h("table", { class: "t" },
         h("thead", {}, h("tr", {}, h("th", {}, "Бот"), h("th", {}, "Клиент"), h("th", {}, "Статус"), h("th", {}, ""))),
         h("tbody", {}, probs.items.map((b) => h("tr", {},
@@ -585,8 +735,8 @@ async function pageAdminCatalog() {
       };
       return h("div", { class: "panel", style: "display:grid;gap:14px" },
         h("h2", { style: "margin:0" }, h("span", { style: "display:flex;gap:10px;align-items:center" }, h("span", { class: "avatar", style: `background:${p.color};width:32px;height:32px;font-size:14px;border-radius:10px` }, p.title[0]), p.title),
-          h("label", { style: "display:flex;gap:10px;align-items:center;font-weight:400;font-size:14px;color:var(--mist)" }, "В продаже", h("span", { class: "switch" }, enabled, h("span", {})))),
-        h("label", { style: "display:flex;gap:12px;align-items:center;color:var(--mist)" }, "Пробный период, дней", trial),
+          h("label", { style: "display:flex;gap:10px;align-items:center;font-weight:400;font-size:14px;color:var(--ink-2)" }, "В продаже", h("span", { class: "switch" }, enabled, h("span", {})))),
+        h("label", { style: "display:flex;gap:12px;align-items:center;color:var(--ink-2)" }, "Пробный период, дней", trial),
         h("div", { class: "scroll" }, h("table", { class: "t" }, h("thead", {}, h("tr", {}, h("th", {}, "Срок"), h("th", {}, "Цена, $"), h("th", {}, "Вкл"))), h("tbody", {}, rows.map((x) => x.el)))),
         h("div", { style: "display:flex;gap:8px;flex-wrap:wrap" }, h("div", { style: "flex:0 1 220px" }, newDays), save));
     })]);
@@ -696,7 +846,7 @@ async function boot() {
   document.title = `Кабинет · ${S.cfg.brand}`;
   if (TG) {
     TG.ready(); TG.expand();
-    try { TG.setHeaderColor("#000000"); TG.setBackgroundColor("#000000"); } catch (e) { /* старые клиенты */ }
+    try { TG.setHeaderColor("#e7ebfa"); TG.setBackgroundColor("#e7ebfa"); } catch (e) { /* старые клиенты */ }
     try {
       const r = await api("POST", "/api/auth/webapp", { init_data: TG.initData });
       S.token = r.token; sessionStorage.setItem("bc_token", r.token);

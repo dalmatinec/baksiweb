@@ -48,6 +48,18 @@ async def expire_bans(app: App) -> None:
         await app.unban(uid)
 
 
+try:
+    import baksi_kit as _kit
+    IN_PLATFORM = _kit.in_platform()
+except ImportError:
+    IN_PLATFORM = False
+
+
+def auto_backup_enabled(app: App) -> bool:
+    """Под платформой архивы и так делаются каждую ночь, поэтому присылать копию в Telegram - по желанию."""
+    return bool(app.store.setting("auto_backup", not IN_PLATFORM))
+
+
 async def daily(app: App) -> None:
     s = app.store.setting
     local = datetime.now(timezone(timedelta(hours=int(s("tz_offset", 3)))))
@@ -57,7 +69,8 @@ async def daily(app: App) -> None:
     await app.set_setting("last_backup_day", today)
     await app.db.execute("DELETE FROM admin_log WHERE ts < ?", (now() - LOG_KEEP_DAYS * 86400,))
     await app.db.execute("PRAGMA optimize")
-    await send_backup(app, "💾 Ежедневный бэкап")
+    if auto_backup_enabled(app):
+        await send_backup(app, "💾 Ежедневный бэкап")
     removed = await app.media.collect_garbage()
     if removed:
         log.info("Удалено неиспользуемых медиа: %s", removed)

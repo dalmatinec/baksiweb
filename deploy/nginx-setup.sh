@@ -65,7 +65,11 @@ if [ -n "${EMAIL}" ]; then ARGS+=(-m "${EMAIL}"); else ARGS+=(--register-unsafel
 certbot "${ARGS[@]}"
 
 docker compose up -d baksi
-sleep 3
+echo "== Жду, пока платформа запустится"
+for _ in $(seq 1 30); do
+  curl -fsS -m 3 http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
+  sleep 2
+done
 if curl -fsS -m 10 "https://${HOST}/healthz" >/dev/null; then
   echo "✅ Сайт работает: https://${HOST}"
   echo "   Перезапускаю платформу, чтобы включилась кнопка Mini App в хаб-боте"

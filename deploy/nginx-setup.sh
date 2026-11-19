@@ -9,17 +9,20 @@ command -v nginx >/dev/null || { echo "nginx не найден"; exit 1; }
 URL=$(grep -E '^PUBLIC_URL=' .env | cut -d= -f2- | tr -d '"' || true)
 HOST=${URL#https://}; HOST=${HOST#http://}; HOST=${HOST%%/*}
 [ -n "${HOST}" ] || { echo "В .env не задан PUBLIC_URL (например https://1.2.3.4.sslip.io)"; exit 1; }
-echo "== Сайт: ${HOST}"
+PORT=$(grep -E '^HOST_PORT=' .env | cut -d= -f2- | tr -d '"' || true)
+PORT=${PORT:-8080}
+NAME=$(basename "$(pwd)")   # baksi или baksi-test: у каждой копии свой конфиг nginx
+echo "== Сайт: ${HOST} → порт ${PORT}"
 
 # Caddy не нужен: https делает nginx
 docker compose --profile https rm -sf caddy >/dev/null 2>&1 || true
 sed -i 's/^DOMAIN=.*/DOMAIN=/' .env
 
 if grep -qE 'include\s+/etc/nginx/sites-enabled' /etc/nginx/nginx.conf && [ -d /etc/nginx/sites-enabled ]; then
-  CONF=/etc/nginx/sites-available/baksi.conf
-  LINK=/etc/nginx/sites-enabled/baksi.conf
+  CONF=/etc/nginx/sites-available/${NAME}.conf
+  LINK=/etc/nginx/sites-enabled/${NAME}.conf
 else
-  CONF=/etc/nginx/conf.d/baksi.conf
+  CONF=/etc/nginx/conf.d/${NAME}.conf
   LINK=""
 fi
 
@@ -48,7 +51,7 @@ server {
     }
 }
 EOF
-  sed -i "s/__HOST__/${HOST}/" "${CONF}"
+  sed -i "s/__HOST__/${HOST}/; s/127.0.0.1:8080/127.0.0.1:${PORT}/" "${CONF}"
   [ -n "${LINK}" ] && ln -sf "${CONF}" "${LINK}"
   echo "== Добавлен ${CONF}"
 else
@@ -73,7 +76,7 @@ certbot "${ARGS[@]}"
 docker compose up -d baksi
 echo "== Жду, пока платформа запустится"
 for _ in $(seq 1 30); do
-  curl -fsS -m 3 http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
+  curl -fsS -m 3 "http://127.0.0.1:${PORT}/healthz" >/dev/null 2>&1 && break
   sleep 2
 done
 if curl -fsS -m 10 "https://${HOST}/healthz" >/dev/null; then

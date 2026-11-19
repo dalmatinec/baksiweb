@@ -3,12 +3,12 @@
 services:
   baksi:
     build: .
-    image: baksi-cloud
+    image: baksi-cloud${IMAGE_TAG:-}     # у тестовой копии свой образ: IMAGE_TAG=-test
     env_file: .env
     volumes:
       - ./data:/data
     ports:
-      - "127.0.0.1:8080:8080"   # без домена веб доступен только с сервера (через SSH-туннель)
+      - "127.0.0.1:${HOST_PORT:-8080}:8080"   # тестовая копия на том же сервере: HOST_PORT=8081
     restart: unless-stopped
     init: true
     stop_grace_period: 40s       # копии ботов успевают корректно остановиться

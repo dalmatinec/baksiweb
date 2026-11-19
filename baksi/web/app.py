@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from .. import design
 from ..app import App
 from ..accounts import AccountError
+from ..resilience import HubError, replace_hub, site_notice
 from ..billing import BillingError, InsufficientFunds, money
 from ..catalog import plan_label
 from ..cryptopay import PaymentError
@@ -130,7 +131,7 @@ def create_web(app: App) -> FastAPI:
     async def auth_widget_redirect(request: Request):
         """Telegram Login Widget в режиме data-auth-url: данные приходят в query."""
         limiter.check(client_ip(request), "auth", 20, 60)
-        if not await app.db.get_setting("login_widget", False):
+        if not await app.db.get_setting("login_widget", app.cfg.secure_cookies):
             return RedirectResponse("/app", status_code=303)
         try:
             tg = check_login_widget(dict(request.query_params), app.hub_token)
@@ -210,9 +211,9 @@ def create_web(app: App) -> FastAPI:
     # --- публичное ------------------------------------------------------------
     @web.get("/api/config")
     async def config():
-        return {"brand": app.cfg.brand, "hub": app.hub_username, "notice": await app.db.get_setting("site_notice", ""), "payments": {"cryptobot": app.pay.enabled},
+        return {"brand": app.cfg.brand, "hub": app.hub_username, "notice": await site_notice(app), "payments": {"cryptobot": app.pay.enabled},
                 "support_url": await app.db.get_setting("support_url", ""),
-                "widget": bool(await app.db.get_setting("login_widget", False)) and bool(app.hub_username),
+                "widget": bool(await app.db.get_setting("login_widget", app.cfg.secure_cookies)) and bool(app.hub_username),
                 "referral_percent": await app.db.get_setting("referral_percent", 0)}
 
     @web.get("/api/catalog")
@@ -681,9 +682,25 @@ def create_web(app: App) -> FastAPI:
     SETTINGS_KEYS = {"support_url": str, "referral_percent": int, "backup_to_telegram": bool,
                      "login_widget": bool}
 
+    @web.get("/api/admin/hub")
+    async def admin_hub(_=Depends(owner_user)):
+        custom = await app.db.get_setting("hub_custom", None)
+        return {"username": app.hub_username, "mode": app.hub_mode, "reserve": bool(app.cfg.hub_token_reserve),
+                "custom_since": custom.get("at") if custom else None}
+
+    @web.post("/api/admin/hub")
+    async def admin_hub_replace(body: dict = Body(...), admin=Depends(owner_user)):
+        try:
+            username = await replace_hub(app, None if body.get("action") == "revert" else str(body.get("token", "")),
+                                         admin["id"])
+        except HubError as exc:
+            raise bad(exc)
+        return {"ok": True, "username": username}
+
     @web.get("/api/admin/settings")
     async def admin_settings(_=Depends(owner_user)):
-        defaults = {"support_url": "", "referral_percent": 0, "backup_to_telegram": True, "login_widget": False}
+        defaults = {"support_url": "", "referral_percent": 0, "backup_to_telegram": True,
+                    "login_widget": app.cfg.secure_cookies}
         return {k: await app.db.get_setting(k, d) for k, d in defaults.items()}
 
     @web.post("/api/admin/settings")

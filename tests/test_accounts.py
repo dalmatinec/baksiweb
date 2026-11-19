@@ -88,12 +88,12 @@ class AccountTests(unittest.IsolatedAsyncioTestCase):
         await self.app.billing.ensure_user(NEW, "n", "N")
         with self.assertRaises(AccountError):
             await self.acc.set_password(NEW, "DANIYAR", "otherpass1")
-        for _ in range(8):
+        for _ in range(5):
             with self.assertRaises(AccountError):
                 await self.acc.login("daniyar", "wrong-pass")
         with self.assertRaises(AccountError) as ctx:
             await self.acc.login("daniyar", "goodpass1")
-        self.assertIn("попыток", str(ctx.exception), "после 8 ошибок вход по паролю на паузе")
+        self.assertIn("попыток", str(ctx.exception), "после 5 ошибок вход по паролю на паузе")
         self.assertTrue(any("неверно ввёл пароль" in t for t in self.notes(OLD)))
 
     async def test_signup_on_site_confirmed_in_telegram(self):

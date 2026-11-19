@@ -334,9 +334,10 @@ function renderLogin(expired) {
         : "Логин и пароль для сайта. Следующим шагом привяжете Telegram одной кнопкой: через него работают боты и уведомления."),
       form,
       hub ? h("div", { class: "auth-or" }, h("span", {}, "или")) : null,
-      tgButton(),
+      hub && S.cfg.widget ? h("div", { class: "auth-widget", id: "tg-widget" }) : null,
+      hub && S.cfg.widget ? h("a", { class: "auth-link", href: `https://t.me/${hub}?start=login` }, "Кнопка не появилась? Получить ссылку для входа в боте") : tgButton(),
       mode === "login" ? forgot : h("p", { class: "hint", style: "text-align:center" }, "Регистрируясь, вы получаете один аккаунт: в Telegram и на сайте.")].filter(Boolean));
-    if (hub && S.cfg.widget && mode === "login") {
+    if (hub && S.cfg.widget) {
       const w = document.createElement("script");
       w.async = true;
       w.src = "https://telegram.org/js/telegram-widget.js?22";
@@ -345,7 +346,7 @@ function renderLogin(expired) {
       w.setAttribute("data-radius", "14");
       w.setAttribute("data-auth-url", location.origin + "/auth/widget");
       w.setAttribute("data-request-access", "write");
-      box.append(h("div", { class: "auth-widget" }, w));
+      box.querySelector("#tg-widget").append(w);
     }
     setTimeout(() => login.focus(), 50);
   }
@@ -1019,13 +1020,35 @@ async function pageAdminSettings() {
   const backupNow = h("button", { class: "btn" }, "Сделать бэкап сейчас");
   backupNow.onclick = async () => { const r = await act(backupNow, () => api("POST", "/api/admin/backups"), "Бэкап готов"); if (r) route(); };
   const sw = (inp, label, hint) => h("label", { style: "display:flex;gap:14px;align-items:center;justify-content:space-between" }, h("span", { style: "display:grid;gap:2px" }, h("span", {}, label), hint ? h("span", { class: "hint" }, hint) : null), h("span", { class: "switch" }, inp, h("span", {})));
+  const hubInfo = await api("GET", "/api/admin/hub");
+  const hubToken = h("input", { type: "password", placeholder: "Токен нового бота из @BotFather", autocomplete: "off", "aria-label": "Токен нового главного бота" });
+  const hubSwitch = async (e, body, question) => {
+    if (!confirm(question)) return;
+    const r = await act(e.currentTarget, () => api("POST", "/api/admin/hub", body));
+    if (r) { toast(`Переключаюсь на @${r.username}, около минуты`); hubToken.value = ""; setTimeout(() => location.reload(), 15000); }
+  };
+  const hubPanel = h("div", { class: "panel", style: "display:grid;gap:12px;align-content:start" },
+    h("h2", { style: "margin:0" }, "Главный бот"),
+    h("p", { class: "muted", style: "margin:0" }, `Сейчас: @${hubInfo.username}`,
+      hubInfo.mode === "custom" ? " (сменён здесь)" : hubInfo.mode === "reserve" ? " (сработал запасной)" : " (из .env)"),
+    h("p", { class: "hint", style: "margin:0" }, "Клиентские боты не затрагиваются. Платформа перезапустится на новом боте, прежний разошлёт всем ссылку на новый и ещё 30 дней будет отвечать «мы переехали». После смены сделайте /setdomain в @BotFather для нового бота."),
+    hubToken,
+    h("div", { class: "actions" },
+      h("button", { class: "btn danger", onclick: (e) => {
+        if (!hubToken.value.trim()) { toast("Вставьте токен нового бота", true); return; }
+        hubSwitch(e, { token: hubToken.value.trim() }, "Сменить главного бота? Платформа перезапустится примерно на минуту.");
+      } }, "Сменить главного бота"),
+      hubInfo.mode === "custom" ? h("button", { class: "btn", onclick: (e) => hubSwitch(e, { action: "revert" }, "Вернуть главного бота из .env?") }, "Вернуть бота из .env") : null),
+    hubInfo.reserve ? h("span", { class: "hint" }, "Запасной бот задан: включится сам, если Telegram заблокирует главного.")
+      : h("span", { class: "hint" }, "Запасной бот не задан (HUB_BOT_TOKEN_RESERVE в .env)."));
   shell([head("Настройки"),
+    hubPanel,
     h("div", { class: "grid2" },
       h("div", { class: "panel", style: "display:grid;gap:14px" }, h("h2", { style: "margin:0" }, "Платформа"),
         h("label", { class: "field" }, h("span", {}, "Ссылка на поддержку"), support),
         h("label", { class: "field" }, h("span", {}, "Реферальный процент"), ref, h("span", {}, "С каждого пополнения приглашённого. 0 - выключено.")),
         sw(toTg, "Присылать ночной бэкап в Telegram", "Если архив меньше 45 МБ"),
-        sw(widget, "Вход на сайте через Telegram-виджет", "Нужен домен в @BotFather → /setdomain"),
+        sw(widget, "Кнопка «Войти через Telegram» на сайте", "Нужен домен в @BotFather → /setdomain → ваш бот → baksi.cloud"),
         h("div", {}, save)),
       h("div", { class: "panel", style: "display:grid;gap:12px" }, h("h2", { style: "margin:0" }, "Рассылка клиентам"), text, h("div", {}, send))),
     h("div", { class: "panel flush" }, h("h2", { style: "padding:18px 18px 0" }, "Бэкапы", h("span", {}, backupNow)),

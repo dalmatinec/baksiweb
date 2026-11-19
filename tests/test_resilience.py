@@ -144,7 +144,7 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
         emitted = []
         orig = baksi_kit.emit
         baksi_kit.emit = lambda ev, **kw: emitted.append(ev)
-        baksi_kit._last_touch = 0.0
+        baksi_kit._last_touch = None
         try:
             for _ in range(50):
                 baksi_kit.touch()
@@ -179,8 +179,58 @@ class ResilienceTests(unittest.IsolatedAsyncioTestCase):
             res.notify_via_client_bots = orig
         self.assertIn("@new_hub", calls[0])
         self.assertIn("@old_hub", calls[0])
-        self.assertIn("@new_hub", await self.app.db.get_setting("site_notice"))
+        from baksi.resilience import site_notice
+        self.assertIn("@new_hub", await site_notice(self.app))
         self.assertTrue(any("@new_hub" in o.text for o in self.notes(CLIENT)))
+
+    async def test_manual_hub_replace_and_revert(self):
+        import baksi.resilience as res
+        import baksi.tg as tg
+        from baksi.resilience import HubError, active_hub_token, announce_after_failover, replace_hub, site_notice
+        stopped = []
+        self.app.request_stop = lambda: stopped.append(True)
+        self.app.hub_username, self.app.hub_token = "old_hub", "1:x"
+        known = {"7:newtoken": tg.BotInfo(id=777, username="new_hub", name="New"),
+                 "1:x": tg.BotInfo(id=1, username="env_hub", name="Env"),
+                 "8:client": tg.BotInfo(id=888, username="cl_bot", name="C"),
+                 "9:same": tg.BotInfo(id=9, username="old_hub", name="Old")}
+
+        async def fake_check(token, proxy=""):
+            if token not in known:
+                raise tg.TokenError("Telegram не принял токен")
+            return known[token]
+        orig = tg.check_token
+        tg.check_token = fake_check
+        try:
+            iid = await self.bot_instance()
+            await self.app.db.run("UPDATE instances SET bot_id = 888 WHERE id = ?", iid)
+            for bad, why in (("garbage", "не принял"), ("9:same", "текущий"), ("8:client", "бот клиента")):
+                with self.assertRaises(HubError) as ctx:
+                    await replace_hub(self.app, bad, OWNER)
+                self.assertIn(why, str(ctx.exception))
+            self.assertEqual(await replace_hub(self.app, "7:newtoken", OWNER), "new_hub")
+            await asyncio.sleep(2.2)
+            self.assertEqual(stopped, [True], "платформа перезапускается на новом боте")
+            self.assertEqual(await active_hub_token(self.app.db, self.app.cfg, self.app.vault), ("custom", "7:newtoken"))
+            self.assertIsNone(await self.app.db.value("SELECT deleted_at FROM instances WHERE id = ?", iid),
+                              "клиентские боты не тронуты")
+            # после перезапуска: объявление (прежний бот без сети в тесте - просто без рассылки)
+            self.app.hub_mode, self.app.hub_username, self.app.hub_token = "custom", "new_hub", "7:newtoken"
+            info = await self.app.db.get_setting("hub_failover")
+            info.pop("old_token_enc")
+            await self.app.db.set_setting("hub_failover", info)
+            await announce_after_failover(self.app)
+            self.assertIn("@new_hub", await site_notice(self.app))
+            self.assertTrue(any("теперь @new_hub" in o.text for o in self.notes(OWNER)))
+            # вернуть бота из .env
+            await replace_hub(self.app, None, OWNER)
+            self.assertEqual(await active_hub_token(self.app.db, self.app.cfg, self.app.vault), ("main", "1:x"))
+        finally:
+            tg.check_token = orig
+        # баннер сам исчезает
+        await self.app.db.set_setting("site_notice", {"text": "старое", "until": int(time.time()) - 1})
+        self.assertEqual(await site_notice(self.app), "")
+        self.assertTrue(res)
 
     async def test_ops_screen(self):
         await self.dp.feed_update(self.bot, callback_update(OWNER, user(OWNER), "ops"))

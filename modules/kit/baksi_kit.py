@@ -68,14 +68,14 @@ def emit(event: str, **data: Any) -> None:
     sys.stdout.flush()
 
 
-_last_touch = 0.0
+_last_touch: float | None = None
 
 
 def touch() -> None:
     """Бот работает (пришло сообщение или он сам что-то сделал). Платформа не поставит его на паузу как
     «молчащего». Сообщает не чаще раза в 10 минут, вызывать можно сколько угодно часто."""
     global _last_touch
-    if time.monotonic() - _last_touch >= 600:
+    if _last_touch is None or time.monotonic() - _last_touch >= 600:
         _last_touch = time.monotonic()
         emit("activity")
 

@@ -98,12 +98,69 @@ async def set_backup_chat(app: "App", chat_id: int, title: str) -> None:
 
 
 # --- запасной хаб-бот ----------------------------------------------------------------------
-async def active_hub_token(app_db, cfg) -> tuple[str, str]:
-    """Какой токен хаба сейчас главный: ('main'|'reserve', токен)."""
+class HubError(Exception):
+    pass
+
+
+async def active_hub_token(app_db, cfg, vault=None) -> tuple[str, str]:
+    """Какой токен хаба сейчас главный: ('main'|'custom'|'reserve', токен).
+    main - из .env, custom - владелец сменил бота в админке, reserve - сработал запасной."""
     active = await app_db.get_setting("hub_active", "main")
     if active == "reserve" and cfg.hub_token_reserve:
         return "reserve", cfg.hub_token_reserve
+    if active == "custom" and vault:
+        custom = await app_db.get_setting("hub_custom", None)
+        token = vault.decrypt(custom["token_enc"]) if custom else None
+        if token:
+            return "custom", token
     return "main", cfg.hub_token
+
+
+async def set_notice(app: "App", text: str, days: int = 14) -> None:
+    """Баннер на сайте и в кабинете; сам исчезает через days дней."""
+    await app.db.set_setting("site_notice", {"text": text, "until": now() + days * 86400})
+
+
+async def site_notice(app: "App") -> str:
+    value = await app.db.get_setting("site_notice", "")
+    if isinstance(value, dict):
+        return value.get("text", "") if value.get("until", 0) > now() else ""
+    return value or ""
+
+
+async def replace_hub(app: "App", token: str | None, by: int) -> str:
+    """Сменить главного бота вручную. Клиентские боты не затрагиваются. token=None - вернуть бота из .env.
+    Платформа перезапускается на новом боте; прежний бот разошлёт всем ссылку на новый и ещё 30 дней будет
+    отвечать «мы переехали»."""
+    from .tg import NetworkError, TokenError, check_token
+    if token is None:
+        token = app.cfg.hub_token
+        mode = "main"
+    else:
+        mode = "custom"
+    try:
+        info = await check_token(token.strip(), app.cfg.proxy_url)
+    except (TokenError, NetworkError) as exc:
+        raise HubError(str(exc))
+    if info.username == app.hub_username:
+        raise HubError("Это и так текущий главный бот.")
+    used = await app.db.one("SELECT id FROM instances WHERE bot_id = ? AND deleted_at IS NULL", info.id)
+    if used:
+        raise HubError("Этот бот уже подключён как бот клиента. Для главного бота создайте отдельного в @BotFather.")
+    if token.strip() == app.cfg.hub_token_reserve:
+        raise HubError("Это запасной бот. Для главного возьмите другого, запасной пусть остаётся запасным.")
+    if mode == "custom":
+        await app.db.set_setting("hub_custom", {"token_enc": app.vault.encrypt(token.strip()), "username": info.username,
+                                                "id": info.id, "at": now()})
+    else:
+        await app.db.set_setting("hub_custom", None)
+    await app.db.set_setting("hub_active", mode)
+    await app.db.set_setting("hub_failover", {"old": app.hub_username, "old_token_enc": app.vault.encrypt(app.hub_token),
+                                              "at": now(), "announced": False, "manual": True})
+    await app.db.audit(by, "hub.replace", f"@{app.hub_username} -> @{info.username}")
+    log.warning("Главный бот меняется: @%s -> @%s", app.hub_username, info.username)
+    asyncio.get_running_loop().call_later(2, app.request_stop)  # ответ успеет уйти, потом перезапуск
+    return info.username
 
 
 async def reserve_username(app: "App") -> str:
@@ -156,8 +213,8 @@ async def switch_to_reserve(app: "App") -> None:
                 + " Создайте нового бота в @BotFather и пропишите его токен в .env, затем перезапустите платформу.")
         log.error(text)
         await notify_via_client_bots(app, text, only_owners=True)
-        await app.db.set_setting("site_notice", "Бот управления временно недоступен, ваши боты работают. "
-                                                "Скоро здесь появится новая ссылка.")
+        await set_notice(app, "Бот управления временно недоступен, ваши боты работают. "
+                              "Скоро здесь появится новая ссылка.", days=3)
         return
     await app.db.set_setting("hub_active", "reserve")
     await app.db.set_setting("hub_failover", {"old": old, "at": now(), "announced": False})
@@ -173,8 +230,10 @@ async def announce_after_failover(app: "App") -> int:
         return 0
     new = app.hub_username
     old = info.get("old", "")
-    await app.db.set_setting("site_notice", f"Новый бот управления: @{new}. Прежний (@{old}) больше не работает, "
-                                            "ваши боты и баланс на месте.")
+    if info.get("manual"):
+        return await announce_manual_switch(app, info)
+    await set_notice(app, f"Новый бот управления: @{new}. Прежний (@{old}) больше не работает, "
+                          "ваши боты и баланс на месте.")
     text = (f"⚠️ <b>{app.cfg.brand}: новый бот управления @{new}</b>\n\n"
             f"Прежний бот @{old} заблокирован или удалён Telegram. Ваши боты работают как обычно, баланс на месте.\n"
             f"Откройте @{new} и нажмите «Запустить», чтобы снова получать уведомления и управлять ботами.")
@@ -189,6 +248,65 @@ async def announce_after_failover(app: "App") -> int:
                         "Создайте новый запасной бот и пропишите его в HUB_BOT_TOKEN_RESERVE, а в HUB_BOT_TOKEN - "
                         "токен @" + new + ". Не забудьте /setdomain в @BotFather для входа на сайте.")
     return sent
+
+
+async def announce_manual_switch(app: "App", info: dict) -> int:
+    """Ручная смена: прежний бот жив, поэтому всем пишет он сам (его все и так открывали)."""
+    new, old = app.hub_username, info.get("old", "")
+    await set_notice(app, f"Бот управления теперь @{new}. Ваши боты и баланс на месте.", days=14)
+    text = (f"🔁 <b>{app.cfg.brand}: бот управления теперь @{new}</b>\n\n"
+            f"Откройте @{new} и нажмите «Запустить». Ваши боты работают как обычно, баланс и подписки на месте. "
+            f"Здесь (@{old}) больше ничего не нажимайте.")
+    old_token = app.vault.decrypt(info.get("old_token_enc", "")) if info.get("old_token_enc") else None
+    sent = 0
+    if old_token:
+        bot = Bot(old_token, session=make_session(app.cfg.proxy_url))
+        try:
+            users = await app.db.all("SELECT id FROM users WHERE banned = 0 AND hub_blocked = 0")
+            for u in users:
+                try:
+                    await bot.send_message(u["id"], text, parse_mode="HTML")
+                    sent += 1
+                except Exception:
+                    pass
+                await asyncio.sleep(0.05)  # не больше 20 сообщений в секунду
+        finally:
+            await bot.session.close()
+    info["announced"] = True
+    await app.db.set_setting("hub_failover", info)
+    app.notifier.owners(f"✅ Главный бот теперь @{new}. Прежний @{old} разослал ссылку {sent} клиентам и ещё 30 дней "
+                        f"будет отвечать «мы переехали». Для входа на сайте сделайте в @BotFather: /setdomain → @{new}.")
+    return sent
+
+
+async def old_hub_redirect(app: "App") -> None:
+    """30 дней после ручной смены прежний бот на любое сообщение отвечает ссылкой на новый."""
+    from aiogram import Dispatcher
+    from aiogram.types import CallbackQuery, Message
+    info = await app.db.get_setting("hub_failover", None)
+    if not info or not info.get("manual") or not info.get("old_token_enc") or now() - info.get("at", 0) > 30 * 86400:
+        return
+    token = app.vault.decrypt(info["old_token_enc"])
+    if not token or token == app.hub_token:
+        return
+    bot = Bot(token, session=make_session(app.cfg.proxy_url))
+    dp = Dispatcher()
+    text = f"🔁 Мы переехали: бот управления теперь @{app.hub_username}. Откройте его и нажмите «Запустить»."
+
+    @dp.message()
+    async def moved(message: Message) -> None:
+        await message.answer(text)
+
+    @dp.callback_query()
+    async def moved_call(call: CallbackQuery) -> None:
+        await call.answer(text, show_alert=True)
+
+    try:
+        await dp.start_polling(bot, handle_signals=False, polling_timeout=30)
+    except Exception as exc:
+        log.info("Прежний хаб-бот больше не отвечает: %s", exc)
+    finally:
+        await bot.session.close()
 
 
 async def notify_via_client_bots(app: "App", text: str, only_owners: bool = False) -> int:

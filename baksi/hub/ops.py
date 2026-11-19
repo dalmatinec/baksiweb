@@ -17,6 +17,7 @@ router = Router(name="hub_ops")
 
 class OpsForm(StatesGroup):
     channel = State()
+    hub_token = State()
 
 
 def _h():
@@ -47,10 +48,13 @@ async def ops_view(app: App) -> tuple[str, object]:
     else:
         lines.append("Запасной не задан. Создайте второго бота в @BotFather и впишите токен в .env: "
                      "<code>HUB_BOT_TOKEN_RESERVE=...</code>, затем перезапустите платформу.")
+    if app.hub_mode == "custom":
+        lines.append("Главный бот сменён в админке (не из .env).")
     lines += ["", "🖥 <b>Переезд на другой сервер</b>: последний бэкап из канала → новый сервер → "
               "<code>bash deploy/restore.sh</code> → сменить IP у домена. Подробно: docs/MIGRATION.md."]
     rows = [[b("📡 Канал для бэкапов" if not chat else "📡 Сменить канал бэкапов", "ops:ch", style=None if chat else "primary")],
             [b("💾 Сделать бэкап сейчас", "admbackup")],
+            [b("🔁 Сменить главного бота", "ops:hub")],
             [b("⬅️ Назад", "adm")]]
     return "\n".join(lines), kb(*rows)
 
@@ -103,6 +107,42 @@ async def channel_set(message: Message, app: App, state: FSMContext) -> None:
     text, markup = await ops_view(app)
     await message.answer(f"✅ <b>Канал «{_h().esc(title)}» подключён.</b> Там уже есть проверочное сообщение.\n\n" + text,
                          reply_markup=markup)
+
+
+@router.callback_query(F.data == "ops:hub")
+async def hub_ask(call: CallbackQuery, app: App, state: FSMContext) -> None:
+    if not app.is_owner(call.from_user.id):
+        await call.answer()
+        return
+    await state.set_state(OpsForm.hub_token)
+    await _h().render(call, (
+        "🔁 <b>Сменить главного бота</b>\n\n"
+        f"Сейчас: @{app.hub_username}. Клиентские боты это не затрагивает: они работают на своих токенах.\n\n"
+        "1. Создайте нового бота в @BotFather.\n2. Пришлите сюда его токен (сообщение я сразу удалю).\n\n"
+        "Что будет: платформа перезапустится на новом боте (около минуты), прежний бот разошлёт всем клиентам "
+        "ссылку на новый и ещё 30 дней будет отвечать «мы переехали». На сайте появится баннер.\n"
+        "После смены сделайте в @BotFather /setdomain для нового бота, чтобы работал вход на сайте."),
+        kb([b("Отмена", "ops")]))
+
+
+@router.message(OpsForm.hub_token, F.text)
+async def hub_set(message: Message, app: App, state: FSMContext) -> None:
+    if not app.is_owner(message.from_user.id):
+        return
+    token = message.text.strip()
+    try:
+        await message.delete()  # токен не должен оставаться в чате
+    except Exception:
+        pass
+    from ..resilience import HubError, replace_hub
+    try:
+        username = await replace_hub(app, token, message.from_user.id)
+    except HubError as exc:
+        await message.answer(f"⚠️ <b>Не сменил.</b> {exc}", reply_markup=kb([b("Отмена", "ops")]))
+        return
+    await state.clear()
+    await message.answer(f"✅ <b>Переключаюсь на @{username}.</b> Через минуту откройте его и нажмите «Запустить». "
+                         "Прежний бот сейчас разошлёт всем ссылку.")
 
 
 @router.callback_query(F.data.startswith("keep:"))

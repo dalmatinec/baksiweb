@@ -50,7 +50,7 @@ async def build(cfg: Config) -> App:
     await catalog.sync()
     billing = Billing(db, catalog)
     from .resilience import active_hub_token, ensure_columns
-    hub_mode, hub_token = await active_hub_token(db, cfg)
+    hub_mode, hub_token = await active_hub_token(db, cfg, vault)
     await ensure_columns(db)
     bot = Bot(hub_token, session=make_session(cfg.proxy_url),
               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
@@ -78,7 +78,7 @@ async def run(cfg: Config) -> None:
         me = await app.bot.get_me()
     except TelegramUnauthorizedError:
         # хаб-бот уже заблокирован или удалён: переключаемся на запасной и перезапускаемся
-        if app.hub_mode == "main" and cfg.hub_token_reserve:
+        if app.hub_mode != "reserve" and cfg.hub_token_reserve:
             log.error("Telegram отклоняет токен хаб-бота при запуске, переключаюсь на запасной")
             await app.db.set_setting("hub_active", "reserve")
             await app.db.set_setting("hub_failover", {"old": "", "at": int(time.time()), "announced": False})
@@ -128,9 +128,9 @@ async def run(cfg: Config) -> None:
         asyncio.create_task(server.serve(), name="web"),
         *start_jobs(app),
     ]
-    if app.hub_mode == "reserve":
-        from .resilience import announce_after_failover
-        tasks.append(asyncio.create_task(announce_after_failover(app), name="announce"))
+    from .resilience import announce_after_failover, old_hub_redirect
+    tasks.append(asyncio.create_task(announce_after_failover(app), name="announce"))  # после смены хаб-бота
+    tasks.append(asyncio.create_task(old_hub_redirect(app), name="old_hub"))
     app.notifier.owners(f"✅ {cfg.brand} запущен. Модули: {', '.join(app.catalog.modules) or 'нет'}")
     log.info("Веб: http://%s:%s%s", cfg.web_host, cfg.web_port,
              f" (публично {cfg.public_url})" if cfg.public_url else "")

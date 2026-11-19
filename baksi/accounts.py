@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 TRANSFER_DELAY = 24 * 3600
 TOKEN_TTL = {"su": 1800, "rs": 86400, "mv": 3600, "pw": 1800}  # регистрация, запасной, перенос, пароль
 LOGIN_RE = re.compile(r"^[a-zA-Z0-9_.-]{3,32}$")
-LOGIN_FAILS = 8          # неверных паролей подряд до паузы
+LOGIN_FAILS = 5          # неверных паролей подряд до паузы
 LOGIN_LOCK = 15 * 60
 KEY_ATTEMPTS = 5         # попыток ввести ключ в час с одного Telegram
 SCRYPT = {"n": 2 ** 14, "r": 8, "p": 1, "dklen": 32}

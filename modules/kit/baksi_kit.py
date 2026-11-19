@@ -68,6 +68,30 @@ def emit(event: str, **data: Any) -> None:
     sys.stdout.flush()
 
 
+_admin_cache: dict[tuple[int, int, bool], tuple[bool, float]] = {}
+
+
+async def is_group_admin(bot, chat_id: int, user_id: int, need_ban: bool = True, sender_chat_id: int | None = None) -> bool:
+    """Админ группы (создатель или админ; при need_ban - с правом банить). Владелец бота - всегда да.
+    Анонимный админ пишет от имени самой группы (sender_chat == группа) - тоже да. Кэш на 5 минут."""
+    if user_id in owner_ids() or sender_chat_id == chat_id:
+        return True
+    key = (chat_id, user_id, need_ban)
+    cached = _admin_cache.get(key)
+    if cached and time.monotonic() - cached[1] < 300:
+        return cached[0]
+    try:
+        member = await bot.get_chat_member(chat_id, user_id)
+        ok = member.status == "creator" or (member.status == "administrator" and
+                                             (not need_ban or bool(getattr(member, "can_restrict_members", False))))
+    except Exception:
+        ok = False
+    if len(_admin_cache) > 5000:
+        _admin_cache.clear()
+    _admin_cache[key] = (ok, time.monotonic())
+    return ok
+
+
 _last_touch: float | None = None
 
 

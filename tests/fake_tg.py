@@ -36,6 +36,7 @@ class FakeSession(BaseSession):
     sent: list[Sent] = field(default_factory=list)
     blocked: set[int] = field(default_factory=set)
     admins: set[tuple[int, int]] = field(default_factory=set)
+    no_ban: set[tuple[int, int]] = field(default_factory=set)  # админы без права блокировки
     reactions: list[tuple[int, int]] = field(default_factory=list)
     answers: list[str] = field(default_factory=list)
     forums: set[int] = field(default_factory=set)
@@ -112,7 +113,8 @@ class FakeSession(BaseSession):
         if isinstance(method, GetChatMember):
             if (chat_id, method.user_id) in self.admins:
                 return ChatMemberAdministrator.model_construct(
-                    status="administrator", user=User(id=method.user_id, is_bot=False, first_name="A"))
+                    status="administrator", user=User(id=method.user_id, is_bot=False, first_name="A"),
+                    can_restrict_members=(chat_id, method.user_id) not in self.no_ban)
             return ChatMemberMember(user=User(id=method.user_id, is_bot=False, first_name="M"))
         if isinstance(method, DeleteMessage):
             return True

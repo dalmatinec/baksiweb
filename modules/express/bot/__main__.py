@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import html
+import re
 import logging
 import os
 import time
@@ -15,8 +16,8 @@ from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
-from aiogram.filters import Command, CommandStart, StateFilter
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.filters import Command, CommandObject, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -85,9 +86,9 @@ DEFAULTS = {
     "anonymous": False,      # ответы исполнителей копией, без имени
     "cooldown": 60,          # секунд между новыми заявками
     "auto_close_hours": 24,  # закрыть заявку без активности
-    "close_by_anyone": False,
 }
 CARD_TEXT = "📨 Заявка #{номер} от {имя}\nОтветьте реплаем на заявку, ответ уйдёт заказчику."
+TEXTS = [("greeting", "👋 Приветствие"), ("accepted", "✅ Заявка принята"), ("closed_user", "🔒 Заявка закрыта")]
 RATE_WINDOW, RATE_LIMIT = 60, 12  # сообщений от заказчика в минуту
 
 
@@ -107,7 +108,6 @@ class Express:
         # сообщения одного заказчика обрабатываем по очереди: альбом из 5 фото приходит одновременно,
         # и без замка получилось бы 5 заявок вместо одной
         self.user_locks: dict[int, asyncio.Lock] = {}
-        self.admin_cache: dict[tuple[int, int], tuple[bool, float]] = {}
 
     def opt(self, key: str):
         """Своя настройка клиента → оформление от владельца платформы → значение по умолчанию."""
@@ -119,21 +119,6 @@ class Express:
 
     def is_owner(self, user_id: int) -> bool:
         return user_id in kit.owner_ids()
-
-    async def can_moderate(self, chat_id: int, user_id: int) -> bool:
-        if self.is_owner(user_id) or self.opt("close_by_anyone"):
-            return True
-        key = (chat_id, user_id)
-        cached = self.admin_cache.get(key)
-        if cached and time.monotonic() - cached[1] < 300:
-            return cached[0]
-        try:
-            member = await self.bot.get_chat_member(chat_id, user_id)
-            ok = member.status in ("creator", "administrator")
-        except TelegramBadRequest:
-            ok = False
-        self.admin_cache[key] = (ok, time.monotonic())
-        return ok
 
     def lock(self, user_id: int) -> asyncio.Lock:
         if len(self.user_locks) > 5000:
@@ -263,13 +248,9 @@ async def _from_customer(message: Message, ex: Express) -> None:
             pass
     if created:
         name = esc(user.full_name)
-        who = name + (f" (@{esc(user.username)})" if user.username else "")
+        who = name + (f" (@{esc(user.username)})" if user.username else "") + f" · ID <code>{user.id}</code>"
         card = kit.ui_text("card", CARD_TEXT).replace("{номер}", str(ticket_id)).replace("{имя}", who)
-        control = await ex.bot.send_message(
-            group, card, reply_to_message_id=fwd.message_id,
-            reply_markup=kit.kb([[kit.ui_btn("ex_close", "✅ Закрыть заявку", f"ex:close:{ticket_id}", style="success"),
-                                  kit.ui_btn("ex_ban", "⛔️ Бан", f"ex:ban:{user.id}", style="danger")]]),
-            disable_notification=True)
+        control = await ex.bot.send_message(group, card, reply_to_message_id=fwd.message_id, disable_notification=True)
         await ex.db.run("UPDATE tickets SET control_id = ? WHERE id = ?", control.message_id, ticket_id)
         await ex.db.run("INSERT OR REPLACE INTO group_msgs(chat_id, message_id, ticket_id, user_id, created_at) "
                         "VALUES (?, ?, ?, ?, ?)", group, control.message_id, ticket_id, user.id, now())
@@ -277,7 +258,7 @@ async def _from_customer(message: Message, ex: Express) -> None:
 
 
 # --- исполнители в группе ----------------------------------------------------------
-@router.message(F.chat.type.in_({"group", "supergroup"}), F.reply_to_message)
+@router.message(F.chat.type.in_({"group", "supergroup"}), F.reply_to_message, not_command)
 async def seller_reply(message: Message, ex: Express) -> None:
     if message.chat.id != kit.bound_chat_id() or not message.from_user or message.from_user.is_bot:
         return
@@ -317,57 +298,106 @@ async def seller_reply(message: Message, ex: Express) -> None:
                     link["ticket_id"], seller.id, seller.full_name, now())
     await ex.db.run("UPDATE tickets SET last_at = ? WHERE id = ?", now(), link["ticket_id"])
     try:  # отметка «доставлено» без лишних сообщений в группе
-        await ex.bot.set_message_reaction(message.chat.id, message.message_id, [ReactionTypeEmoji(emoji="👌")])
+        await ex.bot.set_message_reaction(message.chat.id, message.message_id, [ReactionTypeEmoji(emoji="👍")])
     except TelegramBadRequest:
         pass
 
 
-@router.callback_query(F.data.startswith("ex:close:"))
-async def close_ticket(call: CallbackQuery, ex: Express) -> None:
-    ticket_id = int(call.data.split(":")[2])
-    if not await ex.can_moderate(call.message.chat.id, call.from_user.id):
-        await call.answer("Закрывать заявки могут админы группы", show_alert=True)
+# --- бан, разбан, закрытие: команды админов группы -------------------------------------
+async def target_user(message: Message, ex: Express, command: CommandObject) -> int | None:
+    """Кого касается команда: реплай на сообщение заявки в группе или ID в команде."""
+    arg = (command.args or "").strip()
+    if arg.lstrip("-").isdigit():
+        return int(arg)
+    if message.reply_to_message and message.chat.type != "private":
+        link = await ex.db.one("SELECT user_id FROM group_msgs WHERE chat_id = ? AND message_id = ?",
+                               message.chat.id, message.reply_to_message.message_id)
+        if link:
+            return link["user_id"]
+    return None
+
+
+async def may_ban(message: Message, ex: Express) -> bool:
+    """В группе - админы с правом банить (и владелец бота), в личке бота - только владелец."""
+    if not message.from_user:
+        return False
+    if message.chat.type == "private":
+        return ex.is_owner(message.from_user.id)
+    if message.chat.id != kit.bound_chat_id():
+        return False
+    return await kit.is_group_admin(ex.bot, message.chat.id, message.from_user.id, need_ban=True,
+                                    sender_chat_id=message.sender_chat.id if message.sender_chat else None)
+
+
+async def reply_note(message: Message, text: str, keep: bool = True) -> None:
+    note = await message.reply(text)
+    if not keep:
+        asyncio.create_task(delete_later(note, 10))
+
+
+@router.message(Command("ban"))
+async def ban_cmd(message: Message, command: CommandObject, ex: Express) -> None:
+    if not await may_ban(message, ex):
+        if message.chat.type != "private" and message.chat.id == kit.bound_chat_id():
+            await reply_note(message, "Банить могут админы группы с правом блокировки.", keep=False)
         return
-    ticket = await ex.db.one("SELECT * FROM tickets WHERE id = ?", ticket_id)
+    uid = await target_user(message, ex, command)
+    if not uid:
+        await reply_note(message, "Ответьте /ban на сообщение заявки или напишите /ban ID.", keep=False)
+        return
+    await ex.db.run("INSERT INTO users(id, created_at, banned) VALUES (?, ?, 1) ON CONFLICT(id) DO UPDATE SET banned = 1",
+                    uid, now())
+    await ex.db.run("UPDATE tickets SET status = 'closed', closed_at = ?, closed_by = ? WHERE user_id = ? AND status = 'open'",
+                    now(), message.from_user.id, uid)
+    await reply_note(message, f"⛔️ Заказчик <code>{uid}</code> заблокирован: его заявки больше не приходят.\n"
+                              f"Разблокировать: <code>/unban {uid}</code>")
+
+
+@router.message(Command("unban"))
+async def unban_cmd(message: Message, command: CommandObject, ex: Express) -> None:
+    if not await may_ban(message, ex):
+        return
+    uid = await target_user(message, ex, command)
+    if not uid:
+        await reply_note(message, "Ответьте /unban на сообщение заявки или напишите /unban ID.", keep=False)
+        return
+    if not await ex.db.value("SELECT banned FROM users WHERE id = ?", uid, default=0):
+        await reply_note(message, f"Заказчик <code>{uid}</code> не заблокирован.", keep=False)
+        return
+    await ex.db.run("UPDATE users SET banned = 0 WHERE id = ?", uid)
+    await reply_note(message, f"✅ Заказчик <code>{uid}</code> разблокирован.")
+
+
+@router.message(Command("close"), F.chat.type.in_({"group", "supergroup"}))
+async def close_cmd(message: Message, command: CommandObject, ex: Express) -> None:
+    """Закрыть заявку раньше автозакрытия: реплаем на её сообщение, любой админ группы."""
+    if message.chat.id != kit.bound_chat_id() or not message.from_user or not message.reply_to_message:
+        return
+    if not await kit.is_group_admin(ex.bot, message.chat.id, message.from_user.id, need_ban=False,
+                                    sender_chat_id=message.sender_chat.id if message.sender_chat else None):
+        return
+    link = await ex.db.one("SELECT ticket_id FROM group_msgs WHERE chat_id = ? AND message_id = ?",
+                           message.chat.id, message.reply_to_message.message_id)
+    ticket = await ex.db.one("SELECT * FROM tickets WHERE id = ?", link["ticket_id"]) if link else None
     if not ticket:
-        await call.answer()
         return
     if ticket["status"] != "closed":
         await ex.db.run("UPDATE tickets SET status = 'closed', closed_at = ?, closed_by = ? WHERE id = ?",
-                        now(), call.from_user.id, ticket_id)
+                        now(), message.from_user.id, ticket["id"])
         try:
             await ex.bot.send_message(ticket["user_id"], ex.opt("closed_user"))
         except (TelegramForbiddenError, TelegramBadRequest):
             pass
-    sellers = await ex.db.value("SELECT COUNT(DISTINCT seller_id) FROM replies WHERE ticket_id = ?", ticket_id,
-                                default=0)
-    try:
-        await call.message.edit_text(f"✅ Заявка #{ticket_id} закрыта · ответили исполнителей: {sellers}",
-                                     reply_markup=kit.kb([[kit.ui_btn("ex_ban", "⛔️ Бан", f"ex:ban:{ticket['user_id']}", style="danger")]]))
-    except TelegramBadRequest:
-        pass
-    await call.answer("Заявка закрыта")
+    await reply_note(message, f"✅ Заявка #{ticket['id']} закрыта.", keep=False)
 
 
-@router.callback_query(F.data.startswith("ex:ban:") | F.data.startswith("ex:unban:"))
-async def ban_user(call: CallbackQuery, ex: Express) -> None:
-    _, action, uid = call.data.split(":")
-    in_group = call.message.chat.type != "private"
-    if (in_group and not await ex.can_moderate(call.message.chat.id, call.from_user.id)) or \
-            (not in_group and not ex.is_owner(call.from_user.id)):
-        await call.answer("Банить могут админы группы", show_alert=True)
-        return
-    await ex.db.run("UPDATE users SET banned = ? WHERE id = ?", int(action == "ban"), int(uid))
-    if action == "ban":
-        await ex.db.run("UPDATE tickets SET status = 'closed', closed_at = ?, closed_by = ? WHERE user_id = ? "
-                        "AND status = 'open'", now(), call.from_user.id, int(uid))
-    await call.answer("Заказчик заблокирован" if action == "ban" else "Разблокирован", show_alert=True)
-    if not in_group:
-        await admin_bans(call, ex)
+@router.callback_query(F.data.startswith("ex:"))
+async def old_buttons(call: CallbackQuery) -> None:  # кнопки из прежней версии в старых сообщениях
+    await call.answer("Кнопок больше нет: админы группы банят командой /ban реплаем на заявку.", show_alert=True)
 
 
-# --- админка владельца ------------------------------------------------------------
-async def admin_text(ex: Express) -> str:
+# --- админка владельца: по разделам ------------------------------------------------------
+async def stats_text(ex: Express) -> str:
     day = now() - 86400
     total = await ex.db.value("SELECT COUNT(*) FROM tickets", default=0)
     today = await ex.db.value("SELECT COUNT(*) FROM tickets WHERE created_at > ?", day, default=0)
@@ -378,33 +408,37 @@ async def admin_text(ex: Express) -> str:
     top = await ex.db.all("SELECT seller_name, COUNT(*) AS n FROM replies WHERE created_at > ? GROUP BY seller_id "
                           "ORDER BY n DESC LIMIT 5", now() - 30 * 86400)
     group = kit.state().get("title") or "не привязана"
-    lines = [f"⚙️ <b>Экспресс: админка</b>\n",
-             f"👥 Группа исполнителей: <b>{esc(group)}</b>",
-             f"📨 Заявок: сегодня <b>{today}</b>, всего <b>{total}</b>",
+    lines = ["⚙️ <b>Экспресс</b>\n",
+             f"👥 Группа: <b>{esc(group)}</b>",
+             f"📨 Заявок сегодня: <b>{today}</b> · всего: <b>{total}</b>",
              f"💬 С ответом за 30 дней: <b>{answered}</b> из {month}",
-             f"🙋 Заказчиков: <b>{users}</b>",
-             f"🕶 Ответы исполнителей: <b>{'анонимно' if ex.opt('anonymous') else 'форвардом'}</b>"]
+             f"🙋 Заказчиков: <b>{users}</b>"]
     if top:
-        lines.append("\n<b>Активные исполнители (30 дней)</b>")
+        lines.append("\n<b>Активные исполнители, 30 дней</b>")
         lines += [f"{i}. {esc(r['seller_name'])} - {r['n']}" for i, r in enumerate(top, 1)]
     if not kit.bound_chat_id():
-        lines.append(f"\nПривязать группу: добавьте бота и отправьте <code>/bind "
-                     f"{kit.platform().get('bind_code', '')}</code>")
+        lines.append(f"\nПривязать группу: добавьте бота и отправьте <code>/bind {kit.platform().get('bind_code', '')}</code>")
     return "\n".join(lines)
 
 
-def admin_kb(ex: Express):
-    return kit.kb([
-        [kit.btn("✏️ Приветствие", "exa:txt:greeting"), kit.btn("✏️ «Заявка принята»", "exa:txt:accepted")],
-        [kit.btn("✏️ «Заявка закрыта»", "exa:txt:closed_user")],
-        [kit.btn(f"🕶 Анонимные ответы: {'вкл' if ex.opt('anonymous') else 'выкл'}", "exa:tog:anonymous")],
-        [kit.btn(f"🔐 Закрывать может любой: {'да' if ex.opt('close_by_anyone') else 'только админы'}",
-                 "exa:tog:close_by_anyone")],
-        [kit.btn(f"⏱ Пауза между заявками: {ex.opt('cooldown')} с", "exa:num:cooldown"),
-         kit.btn(f"🕓 Автозакрытие: {ex.opt('auto_close_hours')} ч", "exa:num:auto_close_hours")],
-        [kit.btn("⛔️ Заблокированные", "exa:bans"), menu_button()],
-        [kit.btn("🔄 Обновить", "exa:home")],
-    ])
+def home_kb():
+    return kit.kb([[kit.btn("✏️ Тексты", "exa:texts"), kit.btn("⚙️ Настройки", "exa:set")],
+                   [kit.btn("⛔️ Баны", "exa:bans"), menu_button()],
+                   [kit.btn("🔄 Обновить", "exa:home")]])
+
+
+BACK = [kit.btn("⬅️ Назад", "exa:home")]
+
+
+async def show(target: Message | CallbackQuery, text: str, markup) -> None:
+    if isinstance(target, CallbackQuery):
+        try:
+            await target.message.edit_text(text, reply_markup=markup)
+        except TelegramBadRequest:
+            pass
+        await target.answer()
+    else:
+        await target.answer(text, reply_markup=markup)
 
 
 @router.message(Command("admin"), F.chat.type == "private")
@@ -412,7 +446,7 @@ async def admin(message: Message, ex: Express, state: FSMContext) -> None:
     if not ex.is_owner(message.from_user.id):
         return
     await state.clear()
-    await message.answer(await admin_text(ex), reply_markup=admin_kb(ex))
+    await show(message, await stats_text(ex), home_kb())
 
 
 @router.callback_query(F.data == "exa:home")
@@ -420,21 +454,54 @@ async def admin_home(call: CallbackQuery, ex: Express, state: FSMContext) -> Non
     if not ex.is_owner(call.from_user.id):
         return
     await state.clear()
-    try:
-        await call.message.edit_text(await admin_text(ex), reply_markup=admin_kb(ex))
-    except TelegramBadRequest:
-        pass
-    await call.answer()
+    await show(call, await stats_text(ex), home_kb())
+
+
+def preview(text: str, size: int = 70) -> str:
+    plain = " ".join(html.unescape(re.sub(r"<[^>]+>", "", str(text or ""))).split())
+    return plain if len(plain) <= size else plain[:size - 1] + "…"
+
+
+@router.callback_query(F.data == "exa:texts")
+async def admin_texts(call: CallbackQuery, ex: Express, state: FSMContext) -> None:
+    if not ex.is_owner(call.from_user.id):
+        return
+    await state.clear()
+    lines = ["✏️ <b>Тексты</b>\nЧто видит заказчик. Нажмите, чтобы изменить.\n"]
+    for key, label in TEXTS:
+        lines.append(f"<b>{label}</b>" + (" ✎" if ex.db.get(key) is not None else "") + f"\n<i>{esc(preview(ex.opt(key)))}</i>\n")
+    rows = [[kit.btn(label, f"exa:txt:{key}")] for key, label in TEXTS]
+    await show(call, "\n".join(lines), kit.kb(rows + [BACK]))
+
+
+def settings_view(ex: Express):
+    text = ("⚙️ <b>Настройки</b>\n\n"
+            f"🕶 Ответы заказчику: <b>{'копией, без имени исполнителя' if ex.opt('anonymous') else 'форвардом, с именем'}</b>\n"
+            f"⏱ Пауза между новыми заявками: <b>{ex.opt('cooldown')} с</b>\n"
+            f"🕓 Заявка закрывается сама через <b>{ex.opt('auto_close_hours')} ч</b> тишины\n\n"
+            "Закрыть раньше: админ группы отвечает /close на заявку.")
+    rows = [[kit.btn("🕶 Анонимно: " + ("вкл" if ex.opt("anonymous") else "выкл"), "exa:tog:anonymous")],
+            [kit.btn(f"⏱ Пауза: {ex.opt('cooldown')} с", "exa:num:cooldown"),
+             kit.btn(f"🕓 Закрытие: {ex.opt('auto_close_hours')} ч", "exa:num:auto_close_hours")],
+            BACK]
+    return text, kit.kb(rows)
+
+
+@router.callback_query(F.data == "exa:set")
+async def admin_settings(call: CallbackQuery, ex: Express, state: FSMContext) -> None:
+    if not ex.is_owner(call.from_user.id):
+        return
+    await state.clear()
+    await show(call, *settings_view(ex))
 
 
 @router.callback_query(F.data.startswith("exa:tog:"))
 async def admin_toggle(call: CallbackQuery, ex: Express, state: FSMContext) -> None:
     if not ex.is_owner(call.from_user.id):
         return
-    key = call.data.split(":")[2]
-    if key in ("anonymous", "close_by_anyone"):
-        await ex.db.set(key, not ex.opt(key))
-    await admin_home(call, ex, state)
+    if call.data.split(":")[2] == "anonymous":
+        await ex.db.set("anonymous", not ex.opt("anonymous"))
+    await admin_settings(call, ex, state)
 
 
 @router.callback_query(F.data.startswith("exa:txt:") | F.data.startswith("exa:num:"))
@@ -446,11 +513,25 @@ async def admin_edit(call: CallbackQuery, ex: Express, state: FSMContext) -> Non
         return
     await state.set_state(AdminForm.text if kind == "txt" else AdminForm.number)
     await state.update_data(key=key)
-    current = ex.opt(key)
-    prompt = (f"Сейчас:\n<blockquote>{esc(current)}</blockquote>\nОтправьте новый текст. Форматирование и "
-              "премиум-эмодзи сохраняются." if kind == "txt" else f"Сейчас: {current}. Отправьте число.")
-    await call.message.answer(prompt, reply_markup=kit.kb([[kit.btn("Отмена", "exa:home")]]))
-    await call.answer()
+    if kind == "txt":
+        rows = [[kit.btn("↩️ Вернуть стандартный", f"exa:rst:{key}")]] if ex.db.get(key) is not None else []
+        await show(call, f"<b>{dict(TEXTS).get(key, key)}</b>\n\nСейчас:\n<blockquote>{ex.opt(key)}</blockquote>\n"
+                         "Отправьте новый текст. Форматирование и премиум-эмодзи сохранятся.",
+                   kit.kb(rows + [[kit.btn("⬅️ Назад", "exa:texts")]]))
+    else:
+        hint = "в секундах, например 60" if key == "cooldown" else "в часах, например 24"
+        await show(call, f"Сейчас: <b>{ex.opt(key)}</b>. Отправьте число {hint}.", kit.kb([[kit.btn("⬅️ Назад", "exa:set")]]))
+
+
+@router.callback_query(F.data.startswith("exa:rst:"))
+async def admin_reset(call: CallbackQuery, ex: Express, state: FSMContext) -> None:
+    if not ex.is_owner(call.from_user.id):
+        return
+    key = call.data.split(":")[2]
+    if key in dict(TEXTS):
+        await ex.db.set(key, None)
+    await call.answer("Вернули стандартный текст")
+    await admin_texts(call, ex, state)
 
 
 @router.message(AdminForm.text, F.chat.type == "private")
@@ -460,8 +541,8 @@ async def admin_text_input(message: Message, ex: Express, state: FSMContext) -> 
     key = (await state.get_data()).get("key")
     await ex.db.set(key, message.html_text[:3500])
     await state.clear()
-    await message.answer("✅ Сохранено")
-    await message.answer(await admin_text(ex), reply_markup=admin_kb(ex))
+    await message.answer(f"✅ <b>Сохранено.</b> Теперь заказчики видят так:\n\n{message.html_text[:3500]}",
+                         reply_markup=kit.kb([[kit.btn("✏️ Тексты", "exa:texts"), kit.btn("⚙️ Админка", "exa:home")]]))
 
 
 @router.message(AdminForm.number, F.chat.type == "private")
@@ -474,29 +555,36 @@ async def admin_number_input(message: Message, ex: Express, state: FSMContext) -
         if value < 0 or value > 10 ** 6:
             raise ValueError
     except ValueError:
-        await message.answer("Нужно целое число, например 60")
+        await message.answer("⚠️ <b>Не сохранено.</b> Нужно целое число, например 60")
         return
     if key == "auto_close_hours":
         value = max(1, value)
     await ex.db.set(key, value)
     await state.clear()
-    await message.answer("✅ Сохранено")
-    await message.answer(await admin_text(ex), reply_markup=admin_kb(ex))
+    text, markup = settings_view(ex)
+    await message.answer("✅ <b>Сохранено.</b>\n\n" + text, reply_markup=markup)
 
 
 @router.callback_query(F.data == "exa:bans")
 async def admin_bans(call: CallbackQuery, ex: Express) -> None:
     if not ex.is_owner(call.from_user.id):
         return
-    rows = await ex.db.all("SELECT * FROM users WHERE banned = 1 ORDER BY created_at DESC LIMIT 40")
-    buttons = [[kit.btn(f"✅ Разбанить {r['first_name'] or r['id']}", f"ex:unban:{r['id']}")] for r in rows]
-    buttons.append([kit.btn("⬅️ Назад", "exa:home")])
-    text = "⛔️ <b>Заблокированные заказчики</b>" + ("" if rows else "\n\nСписок пуст.")
-    try:
-        await call.message.edit_text(text, reply_markup=kit.kb(buttons))
-    except TelegramBadRequest:
-        pass
-    await call.answer()
+    rows = await ex.db.all("SELECT * FROM users WHERE banned = 1 ORDER BY created_at DESC LIMIT 30")
+    text = ("⛔️ <b>Баны</b>\n\nВ группе: админ с правом блокировки отвечает <code>/ban</code> на сообщение заявки. "
+            "Разбан: <code>/unban</code> тем же способом или <code>/unban ID</code> (в группе или здесь).\n\n"
+            + ("\n".join(f"• {esc(r['first_name'] or 'без имени')} · <code>{r['id']}</code>" for r in rows) if rows
+               else "Сейчас никто не заблокирован."))
+    buttons = [[kit.btn(f"✅ {preview(r['first_name'] or r['id'], 20)}", f"exa:unban:{r['id']}")] for r in rows]
+    await show(call, text, kit.kb(buttons + [BACK]))
+
+
+@router.callback_query(F.data.startswith("exa:unban:"))
+async def admin_unban(call: CallbackQuery, ex: Express) -> None:
+    if not ex.is_owner(call.from_user.id):
+        return
+    await ex.db.run("UPDATE users SET banned = 0 WHERE id = ?", int(call.data.split(":")[2]))
+    await call.answer("Разблокирован")
+    await admin_bans(call, ex)
 
 
 async def cleanup(db: ModuleDB) -> None:

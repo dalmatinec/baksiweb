@@ -620,10 +620,13 @@ async def old_buttons(call: CallbackQuery) -> None:  # кнопки из пре�
 
 
 async def may_moderate(sv: Svyaz, message: Message) -> bool:
-    """Банить могут операторы, владелец и участники подключённой группы (они же отвечают клиентам)."""
+    """Банить могут операторы и владелец (в личке бота), а в подключённой группе - её админы с правом блокировки."""
     if message.chat.type == "private":
         return sv.is_owner(message.from_user.id) or await sv.is_operator(message.from_user.id)
-    return message.chat.id == kit.bound_chat_id()
+    if message.chat.id != kit.bound_chat_id():
+        return False
+    return await kit.is_group_admin(sv.bot, message.chat.id, message.from_user.id, need_ban=True,
+                                    sender_chat_id=message.sender_chat.id if message.sender_chat else None)
 
 
 def ban_text(client_id: int) -> str:
@@ -666,8 +669,15 @@ async def unban_cmd(message: Message, command: CommandObject, sv: Svyaz) -> None
 
 @router.callback_query(F.data.startswith("sv:ban:"))
 async def ban_btn(call: CallbackQuery, sv: Svyaz) -> None:
-    allowed = (call.message and call.message.chat.type != "private" and call.message.chat.id == kit.bound_chat_id()) \
-        or sv.is_owner(call.from_user.id) or await sv.is_operator(call.from_user.id)
+    in_group = call.message and call.message.chat.type != "private"
+    if in_group:
+        allowed = call.message.chat.id == kit.bound_chat_id() and await kit.is_group_admin(
+            sv.bot, call.message.chat.id, call.from_user.id, need_ban=True)
+    else:
+        allowed = sv.is_owner(call.from_user.id) or await sv.is_operator(call.from_user.id)
+    if in_group and not allowed:
+        await call.answer("Блокировать могут админы группы с правом блокировки", show_alert=True)
+        return
     d = await sv.dialog(int(call.data.split(":")[2])) if allowed else None
     if not d:
         await call.answer()

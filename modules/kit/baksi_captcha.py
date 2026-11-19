@@ -144,6 +144,7 @@ class Captcha(BaseMiddleware):
     async def __call__(self, handler, event: Update, data: dict) -> Any:
         message, call = event.message, event.callback_query
         bot = data.get("bot")
+        kit.touch()  # любое входящее событие = бот живой (капча подключена во всех модулях)
         if call and (call.data or "").startswith("kcap:"):
             await self.on_callback(call, bot)
             return None

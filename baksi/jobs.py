@@ -6,7 +6,6 @@ import logging
 import shutil
 import time
 
-from aiogram.types import FSInputFile
 
 from .app import App
 from .billing import money
@@ -132,13 +131,12 @@ async def run_backup(app: App, send: bool) -> str | None:
         log.exception("Бэкап не удался")
         app.notifier.owners("🔴 Ночной бэкап не удался, смотрите логи платформы.")
         return None
-    if send and await app.db.get_setting("backup_to_telegram", True) and path.stat().st_size < 45_000_000:
-        for oid in app.cfg.owner_ids:
-            try:
-                await app.bot.send_document(oid, FSInputFile(path), caption=f"💾 Бэкап {app.cfg.brand}: {path.name}",
-                                            disable_notification=True)
-            except Exception as exc:
-                log.warning("Бэкап владельцу %s не отправлен: %s", oid, exc)
+    if send and await app.db.get_setting("backup_to_telegram", True):
+        from .resilience import send_backup
+        try:
+            await send_backup(app, path)
+        except Exception:
+            log.exception("Бэкап не отправлен в Telegram")
     return path.name
 
 
@@ -166,6 +164,10 @@ async def accounts_loop(app: App) -> None:
             log.exception("Ошибка переноса аккаунтов")
 
 
+from .resilience import failover_loop, idle_loop  # noqa: E402
+
+
 def start_jobs(app: App) -> list[asyncio.Task]:
     return [asyncio.create_task(coro(app), name=coro.__name__)
-            for coro in (payments_loop, billing_loop, cleanup_loop, backup_loop, health_loop, accounts_loop)]
+            for coro in (payments_loop, billing_loop, cleanup_loop, backup_loop, health_loop, accounts_loop,
+                         failover_loop, idle_loop)]

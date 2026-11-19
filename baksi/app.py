@@ -36,6 +36,9 @@ class App:
     hub_username: str = ""
     design: HubDesign = field(default_factory=HubDesign)
     accounts: Any = None  # baksi.accounts.Accounts
+    hub_mode: str = "main"   # main | reserve - какой хаб-бот сейчас работает
+    hub_token: str = ""
+    request_stop: Any = None  # перезапуск платформы (контейнер поднимется сам)
     started_at: float = field(default_factory=time.time)
 
     async def load_design(self) -> None:

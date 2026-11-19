@@ -257,7 +257,8 @@ function shell(content) {
   const subnav = admin.length && location.hash.startsWith("#/admin")
     ? h("nav", { class: "admin-subnav", "aria-label": "Разделы админки" }, admin.map(([href, label]) => h("a", { href, class: isActive(href) ? "btn small primary" : "btn small" }, label)))
     : null;
-  $root().replaceChildren(h("div", { class: "shell" }, side, h("main", { class: "main" }, h("div", { class: "wrap" }, subnav, content)), tabs));
+  const notice = S.cfg.notice ? h("div", { class: "alert warn", role: "status" }, S.cfg.notice) : null;
+  $root().replaceChildren(h("div", { class: "shell" }, side, h("main", { class: "main" }, h("div", { class: "wrap" }, subnav, notice, content)), tabs));
   window.scrollTo(0, 0);
 }
 
@@ -327,6 +328,7 @@ function renderLogin(expired) {
     box.replaceChildren(...[
       h("a", { class: "logo auth-logo", href: "/" }, h("span", { class: "logo-mark", "aria-hidden": "true" }, "B"), S.cfg ? S.cfg.brand : "Baksi Cloud"),
       expired ? h("div", { class: "alert warn" }, "Ссылка для входа устарела или уже использована. Войдите снова.") : null,
+      S.cfg && S.cfg.notice ? h("div", { class: "alert warn" }, S.cfg.notice) : null,
       tabs,
       h("p", { class: "auth-lead" }, mode === "login" ? "С возвращением. Войдите по логину и паролю или через Telegram."
         : "Логин и пароль для сайта. Следующим шагом привяжете Telegram одной кнопкой: через него работают боты и уведомления."),

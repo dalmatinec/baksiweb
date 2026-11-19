@@ -170,6 +170,9 @@ class Instances:
             raise InstanceError("Неизвестное действие")
         await self.get(instance_id, user_id)
         await self.db.run(f"UPDATE instances SET {flag} = ? WHERE id = ?", int(value), instance_id)
+        if flag == "paused" and not value:  # запустили снова: отсчёт тишины начинается заново
+            await self.db.run("UPDATE instances SET last_activity_at = ?, idle_warned_at = NULL, idle_paused_at = NULL "
+                              "WHERE id = ?", now(), instance_id)
         await self.db.audit(user_id, flag, f"instance:{instance_id}", str(value))
         self.sup.poke()
 
@@ -261,6 +264,10 @@ class Instances:
     # --- события от ботов -----------------------------------------------------
     async def on_event(self, instance_id: int, event: dict) -> None:
         kind = event.get("event")
+        if kind == "activity":  # бот получает сообщения или работает сам: не «молчащий»
+            await self.db.run("UPDATE instances SET last_activity_at = ?, idle_warned_at = NULL WHERE id = ?",
+                              now(), instance_id)
+            return
         row = await self.db.one("SELECT * FROM instances WHERE id = ?", instance_id)
         if not row:
             return

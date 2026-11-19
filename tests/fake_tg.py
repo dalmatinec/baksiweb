@@ -10,7 +10,7 @@ from aiogram import Bot
 from aiogram.client.session.base import BaseSession
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.methods import (AnswerCallbackQuery, CloseForumTopic, CopyMessage, CreateForumTopic, DeleteMessage,
-                             DeleteWebhook, EditMessageReplyMarkup, GetChat, SetMyCommands, EditMessageText, ForwardMessage, GetChatMember,
+                             DeleteWebhook, EditMessageReplyMarkup, GetChat, SetMyCommands, SendDocument, EditMessageText, ForwardMessage, GetChatMember,
                              GetMe, SendMessage, SetMessageReaction, TelegramMethod)
 from aiogram.types import (CallbackQuery, Chat, ChatFullInfo, ChatMemberAdministrator, ChatMemberMember, ForumTopic, Message,
                            MessageId, Update, User)
@@ -41,6 +41,7 @@ class FakeSession(BaseSession):
     forums: set[int] = field(default_factory=set)
     commands: dict = field(default_factory=dict)
     reaction_emoji: dict = field(default_factory=dict)
+    documents: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
         BaseSession.__init__(self)
@@ -96,6 +97,12 @@ class FakeSession(BaseSession):
             self.reactions.append((chat_id, method.message_id))
             self.reaction_emoji[(chat_id, method.message_id)] = [r.emoji for r in method.reaction or []]
             return True
+        if isinstance(method, SendDocument):
+            mid = next(self._ids)
+            name = getattr(method.document, "filename", None) or str(getattr(method.document, "path", ""))
+            self.sent.append(Sent("document", chat_id, mid, method.caption, source_id=None, thread=None))
+            self.documents.append((chat_id, name, method.caption))
+            return self._msg(chat_id, mid)
         if isinstance(method, SetMyCommands):
             scope = getattr(method.scope, "chat_id", None)
             self.commands[scope] = [c.command for c in method.commands]

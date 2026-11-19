@@ -7,6 +7,15 @@ from datetime import datetime
 from database import get_database
 from utils import is_group_unreachable
 
+def _touch() -> None:
+    """Рассылка идёт: платформа не сочтёт бота «молчащим», даже если ему никто не пишет."""
+    try:
+        import baksi_kit
+        baksi_kit.touch()
+    except ImportError:
+        pass
+
+
 logger = logging.getLogger(__name__)
 db = get_database()
 
@@ -35,6 +44,7 @@ async def send_to_group(bot: Bot, post_id: int) -> str:
                 message_id=post["message_id"]
             )
             success += 1
+            _touch()
             await asyncio.sleep(0.5)
         except Exception as e:
             errors += 1
@@ -78,6 +88,7 @@ async def forward_to_group(bot: Bot, post_id: int) -> str:
                 message_id=post["message_id"]
             )
             success += 1
+            _touch()
             await asyncio.sleep(0.5)
         except Exception as e:
             errors += 1

@@ -117,7 +117,7 @@ def create_web(app: App) -> FastAPI:
     @web.post("/api/auth/webapp")
     async def auth_webapp(request: Request, body: dict = Body(...)):
         limiter.check(client_ip(request), "auth", 30, 60)
-        tg = check_webapp_init_data(str(body.get("init_data", "")), app.cfg.hub_token)
+        tg = check_webapp_init_data(str(body.get("init_data", "")), app.hub_token)
         if not tg.get("id"):
             raise HTTPException(401, "Нет данных пользователя")
         user, _ = await app.billing.ensure_user(int(tg["id"]), tg.get("username"), tg.get("first_name"))
@@ -133,7 +133,7 @@ def create_web(app: App) -> FastAPI:
         if not await app.db.get_setting("login_widget", False):
             return RedirectResponse("/app", status_code=303)
         try:
-            tg = check_login_widget(dict(request.query_params), app.cfg.hub_token)
+            tg = check_login_widget(dict(request.query_params), app.hub_token)
         except HTTPException:
             return RedirectResponse("/app#/expired", status_code=303)
         user, _ = await app.billing.ensure_user(tg["id"], tg["username"], tg["first_name"])
@@ -145,7 +145,7 @@ def create_web(app: App) -> FastAPI:
     @web.post("/api/auth/widget")
     async def auth_widget(request: Request, body: dict = Body(...)):
         limiter.check(client_ip(request), "auth", 20, 60)
-        tg = check_login_widget(body, app.cfg.hub_token)
+        tg = check_login_widget(body, app.hub_token)
         user, _ = await app.billing.ensure_user(tg["id"], tg["username"], tg["first_name"])
         token = await create_session(app, user["id"], request.headers.get("user-agent", ""))
         resp = JSONResponse({"ok": True})
@@ -210,7 +210,7 @@ def create_web(app: App) -> FastAPI:
     # --- публичное ------------------------------------------------------------
     @web.get("/api/config")
     async def config():
-        return {"brand": app.cfg.brand, "hub": app.hub_username, "payments": {"cryptobot": app.pay.enabled},
+        return {"brand": app.cfg.brand, "hub": app.hub_username, "notice": await app.db.get_setting("site_notice", ""), "payments": {"cryptobot": app.pay.enabled},
                 "support_url": await app.db.get_setting("support_url", ""),
                 "widget": bool(await app.db.get_setting("login_widget", False)) and bool(app.hub_username),
                 "referral_percent": await app.db.get_setting("referral_percent", 0)}

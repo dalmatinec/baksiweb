@@ -662,7 +662,7 @@ async def admin(call: CallbackQuery, app: App) -> None:
     if app.cfg.public_url:
         rows.append([b("🌐 Веб-админка", "admweb", style="primary")])
     rows.append([b("🎨 Оформление ботов", "des", style="success")])
-    rows.append([b("💾 Бэкап сейчас", "admbackup"), b("📣 Рассылка", "admcast")])
+    rows.append([b("🛟 Надёжность и бэкапы", "ops"), b("📣 Рассылка", "admcast")])
     rows.append([b("🔄 Обновить", "adm"), b("⬅️ Назад", "home")])
     await render(call, await admin_stats(app), kb(*rows))
 
@@ -680,7 +680,7 @@ async def admin_web(call: CallbackQuery, app: App) -> None:
 async def admin_backup(call: CallbackQuery, app: App) -> None:
     if not app.is_owner(call.from_user.id):
         return
-    await call.answer("Делаю бэкап, пришлю файл сюда")
+    await call.answer("Делаю бэкап, пришлю файл в канал бэкапов или сюда")
     from ..jobs import run_backup
     name = await run_backup(app, send=True)
     if not name:

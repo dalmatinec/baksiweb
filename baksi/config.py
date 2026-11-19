@@ -48,6 +48,8 @@ class Config:
     backup_keep_days: int
     purge_after_days: int    # сколько хранить данные истёкшей копии
     use_zygote: bool = True  # запуск ботов через заготовку (fork): общая память библиотек, в ~5 раз экономнее
+    hub_token_reserve: str = ""  # запасной хаб-бот: включится сам, если Telegram заблокирует основной
+    backup_keep: int = 1     # сколько полных бэкапов хранить на сервере (копии - в Telegram-канале)
     extra: dict = field(default_factory=dict)
 
     @property
@@ -99,6 +101,8 @@ def load_config(env_file: Path | None = None) -> Config:
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
         instance_mem_mb=_int("INSTANCE_MEM_MB", 320),
         use_zygote=os.environ.get("USE_ZYGOTE", "1").strip() not in ("0", "false", "no", ""),
+        hub_token_reserve=os.environ.get("HUB_BOT_TOKEN_RESERVE", "").strip(),
+        backup_keep=max(1, _int("BACKUP_KEEP", 1)),
         max_instances=_int("MAX_INSTANCES", 300),
         backup_keep_days=_int("BACKUP_KEEP_DAYS", 7),
         purge_after_days=_int("PURGE_AFTER_DAYS", 30),

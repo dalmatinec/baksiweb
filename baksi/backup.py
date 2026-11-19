@@ -93,10 +93,13 @@ class Backups:
         return target
 
     def prune(self) -> None:
-        cutoff = time.time() - self.cfg.backup_keep_days * 86400
-        for path in self.cfg.backups_dir.glob("baksi-*.zip"):
-            if path.stat().st_mtime < cutoff:
-                path.unlink(missing_ok=True)
+        """На сервере - только последние backup_keep полных бэкапов (по умолчанию один): создан новый -
+        старые удаляются, место не забивается. История хранится копиями в Telegram-канале."""
+        archives = sorted(self.cfg.backups_dir.glob("baksi-*.zip"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for path in archives[self.cfg.backup_keep:]:
+            path.unlink(missing_ok=True)
+        for leftover in self.cfg.backups_dir.glob("baksi-*.zip.0*"):  # части от прерванной отправки
+            leftover.unlink(missing_ok=True)
 
     def list(self) -> list[dict]:
         if not self.cfg.backups_dir.exists():

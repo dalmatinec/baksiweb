@@ -11,6 +11,7 @@ import asyncio
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
 
 import uvicorn
@@ -18,6 +19,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.types import BotCommand, ErrorEvent, MenuButtonWebApp, WebAppInfo
 
 from .app import App
@@ -47,7 +49,10 @@ async def build(cfg: Config) -> App:
     catalog = Catalog(db, load_modules(cfg.modules_dir, cfg.instance_mem_mb))
     await catalog.sync()
     billing = Billing(db, catalog)
-    bot = Bot(cfg.hub_token, session=make_session(cfg.proxy_url),
+    from .resilience import active_hub_token, ensure_columns
+    hub_mode, hub_token = await active_hub_token(db, cfg)
+    await ensure_columns(db)
+    bot = Bot(hub_token, session=make_session(cfg.proxy_url),
               default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     notifier = Notifier(bot, db, cfg.owner_ids)
     sup = Supervisor(cfg, db, catalog, vault)
@@ -58,6 +63,7 @@ async def build(cfg: Config) -> App:
     app = App(cfg=cfg, db=db, vault=vault, catalog=catalog, billing=billing, sup=sup, instances=instances,
               notifier=notifier, pay=pay, backups=Backups(cfg, db), bot=bot)
     await app.load_design()
+    app.hub_mode, app.hub_token = hub_mode, hub_token
     from .accounts import Accounts
     app.accounts = Accounts(app)
     await app.accounts.migrate()
@@ -66,7 +72,19 @@ async def build(cfg: Config) -> App:
 
 async def run(cfg: Config) -> None:
     app = await build(cfg)
-    me = await app.bot.get_me()
+    stop = asyncio.Event()
+    app.request_stop = stop.set
+    try:
+        me = await app.bot.get_me()
+    except TelegramUnauthorizedError:
+        # хаб-бот уже заблокирован или удалён: переключаемся на запасной и перезапускаемся
+        if app.hub_mode == "main" and cfg.hub_token_reserve:
+            log.error("Telegram отклоняет токен хаб-бота при запуске, переключаюсь на запасной")
+            await app.db.set_setting("hub_active", "reserve")
+            await app.db.set_setting("hub_failover", {"old": "", "at": int(time.time()), "announced": False})
+            await app.db.close()
+            raise SystemExit(3)
+        raise SystemExit("Telegram отклоняет токен хаб-бота, а запасного нет (HUB_BOT_TOKEN_RESERVE)")
     app.hub_username = me.username or ""
     app.instances.hub_bot_id = me.id
     log.info("%s: хаб-бот @%s, модулей: %s (%s)", cfg.brand, me.username, len(app.catalog.modules),
@@ -78,6 +96,8 @@ async def run(cfg: Config) -> None:
     dp.callback_query.outer_middleware(guard)
     from .hub.security import router as security_router
     dp.include_router(security_router)  # раньше основного: /recover и ввод ключа важнее общих обработчиков
+    from .hub.ops import router as ops_router
+    dp.include_router(ops_router)
     dp.include_router(hub_router)
 
     @dp.errors()
@@ -96,7 +116,6 @@ async def run(cfg: Config) -> None:
                                            server_header=False))
     server.install_signal_handlers = lambda: None
 
-    stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, stop.set)
@@ -109,6 +128,9 @@ async def run(cfg: Config) -> None:
         asyncio.create_task(server.serve(), name="web"),
         *start_jobs(app),
     ]
+    if app.hub_mode == "reserve":
+        from .resilience import announce_after_failover
+        tasks.append(asyncio.create_task(announce_after_failover(app), name="announce"))
     app.notifier.owners(f"✅ {cfg.brand} запущен. Модули: {', '.join(app.catalog.modules) or 'нет'}")
     log.info("Веб: http://%s:%s%s", cfg.web_host, cfg.web_port,
              f" (публично {cfg.public_url})" if cfg.public_url else "")

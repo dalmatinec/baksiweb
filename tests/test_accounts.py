@@ -44,6 +44,9 @@ class AccountTests(unittest.IsolatedAsyncioTestCase):
         router._parent_router = None
         security_router._parent_router = None
         self.dp.include_router(security_router)
+        from baksi.hub.ops import router as ops_router
+        ops_router._parent_router = None
+        self.dp.include_router(ops_router)
         self.dp.include_router(router)
         self.restarted: list[int] = []
 

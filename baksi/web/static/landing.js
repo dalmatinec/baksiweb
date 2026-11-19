@@ -9,6 +9,13 @@
       document.title = `${cfg.brand}: свои Telegram-боты по подписке`;
       const hub = cfg.hub ? `https://t.me/${cfg.hub}` : "/app";
       document.querySelectorAll("[data-hub]").forEach((el) => (el.href = hub));
+      if (cfg.notice) {  // например, после переключения на запасной хаб-бот
+        const bar = document.createElement("div");
+        bar.className = "site-notice";
+        bar.setAttribute("role", "status");
+        bar.textContent = cfg.notice;
+        document.body.prepend(bar);
+      }
       if (cfg.support_url) {
         const s = document.querySelector("[data-support]");
         s.href = cfg.support_url;

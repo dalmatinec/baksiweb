@@ -299,7 +299,7 @@ class Instances:
         self.sup.poke()
 
     async def on_problem(self, instance_id: int, kind: str, details: str) -> None:
-        key = (instance_id, kind)
+        key = (0 if kind in ("low_memory", "capacity") else instance_id, kind)  # про сервер - одно сообщение в час
         if time.time() - self._problem_sent.get(key, 0) < 3600:
             return
         self._problem_sent[key] = time.time()
@@ -320,6 +320,9 @@ class Instances:
         elif kind == "memory":
             self.notifier.owners(f"🟠 Копия #{instance_id} ({row['product']}, {name}) превысила лимит памяти "
                                  f"({details}) и перезапущена.")
+        elif kind == "low_memory":
+            self.notifier.owners(f"🔴 На сервере осталось {details} свободной памяти. Новые боты не запускаются и ждут "
+                                 "в очереди. Каждый бот занимает ~180 МБ: добавьте памяти серверу или освободите её.")
         elif kind == "capacity":
             self.notifier.owners("🟠 Достигнут лимит одновременно работающих ботов (MAX_INSTANCES). "
                                  "Новые копии ждут в очереди.")

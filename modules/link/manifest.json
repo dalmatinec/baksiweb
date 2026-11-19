@@ -6,7 +6,7 @@
   "entry": "bot",
   "color": "#7B6CF6",
   "icon": "link",
-  "mem_mb": 180,
+  "mem_mb": 400,
   "sort": 10,
   "needs_bind": false,
   "how": [

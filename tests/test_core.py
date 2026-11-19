@@ -276,6 +276,9 @@ class SupervisorTests(Base):
             await sup.reconcile()
             await asyncio.sleep(2)
             await sup.watchdog()
+            await sup.watchdog()
+            self.assertEqual(problems, [], "короткий скачок памяти не повод убивать бота")
+            await sup.watchdog()
             self.assertIn("memory", problems)
         finally:
             await sup.shutdown()

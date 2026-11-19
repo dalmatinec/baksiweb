@@ -6,7 +6,7 @@
   "entry": "bot",
   "color": "#22A97F",
   "icon": "bolt",
-  "mem_mb": 120,
+  "mem_mb": 320,
   "sort": 30,
   "needs_bind": true,
   "bind_hint": "Добавьте бота в группу исполнителей и отправьте туда команду:",

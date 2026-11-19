@@ -96,7 +96,7 @@ def load_config(env_file: Path | None = None) -> Config:
         cryptopay_testnet=os.environ.get("CRYPTOPAY_TESTNET", "0").strip() == "1",
         proxy_url=os.environ.get("PROXY_URL", "").strip(),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        instance_mem_mb=_int("INSTANCE_MEM_MB", 160),
+        instance_mem_mb=_int("INSTANCE_MEM_MB", 320),
         max_instances=_int("MAX_INSTANCES", 300),
         backup_keep_days=_int("BACKUP_KEEP_DAYS", 7),
         purge_after_days=_int("PURGE_AFTER_DAYS", 30),

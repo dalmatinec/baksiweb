@@ -60,6 +60,7 @@ class Proc:
     starting: bool = False      # запуск уже запланирован: второй раз не запускаем (иначе два процесса на один токен)
     saw_unauthorized: bool = False
     rss_mb: float = 0.0
+    over_limit: int = 0         # сколько проверок подряд память выше лимита
     last_exit: int | None = None
     restarts: int = 0
     reader: asyncio.Task | None = None
@@ -80,6 +81,29 @@ def _rss_mb(pid: int) -> float:
     except (OSError, ValueError):
         pass
     return 0.0
+
+
+def free_memory_mb() -> float | None:
+    """Сколько памяти ещё можно занять: меньшее из свободной памяти сервера и остатка лимита контейнера."""
+    values = []
+    try:
+        with open("/proc/meminfo", encoding="ascii") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    values.append(int(line.split()[1]) / 1024)
+    except (OSError, ValueError):
+        pass
+    try:
+        limit = Path("/sys/fs/cgroup/memory.max").read_text().strip()
+        if limit.isdigit():
+            used = int(Path("/sys/fs/cgroup/memory.current").read_text().strip())
+            values.append((int(limit) - used) / 1048576)
+    except (OSError, ValueError):
+        pass
+    return min(values) if values else None
+
+
+MIN_FREE_MB = 220  # столько должно оставаться свободным, чтобы запустить ещё одного бота
 
 
 class Supervisor:
@@ -221,6 +245,12 @@ class Supervisor:
             if proc.crashed_until > ts:
                 continue
             if proc.retry_at > ts:
+                continue
+            free = free_memory_mb()
+            if free is not None and free < MIN_FREE_MB:
+                await self._set_status(iid, "queued", "На сервере мало памяти, бот запустится, когда она освободится")
+                if self.on_problem:
+                    await self.on_problem(iid, "low_memory", f"{free:.0f} МБ")
                 continue
             if sum(1 for p in self.procs.values() if p.running) >= self.cfg.max_instances:
                 await self._set_status(iid, "queued", "Сервер загружен, бот запустится автоматически")
@@ -437,18 +467,26 @@ class Supervisor:
 
     # --- сторож памяти --------------------------------------------------------
     async def watchdog(self) -> None:
+        """Перезапуск только при устойчивом превышении (3 проверки подряд, ~45 с): короткий скачок памяти
+        при загрузке картинки или рассылке - нормальная работа, а не утечка, бота за него не убиваем."""
         for proc in list(self.procs.values()):
             if not proc.running or not proc.process:
                 continue
             proc.rss_mb = _rss_mb(proc.process.pid)
-            if proc.rss_mb > proc.module.mem_mb:
-                log.warning("Копия %s: память %.0f МБ > лимита %s МБ, перезапуск",
-                            proc.instance_id, proc.rss_mb, proc.module.mem_mb)
-                self._log_line(proc, f"=== превышен лимит памяти: {proc.rss_mb:.0f} МБ из {proc.module.mem_mb} ===")
-                proc.stopping = False
-                try:
-                    os.killpg(proc.process.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                if self.on_problem:
-                    await self.on_problem(proc.instance_id, "memory", f"{proc.rss_mb:.0f} МБ")
+            if proc.rss_mb <= proc.module.mem_mb:
+                proc.over_limit = 0
+                continue
+            proc.over_limit += 1
+            if proc.over_limit < 3:
+                continue
+            proc.over_limit = 0
+            log.warning("Копия %s: память %.0f МБ > лимита %s МБ дольше 45 с, перезапуск",
+                        proc.instance_id, proc.rss_mb, proc.module.mem_mb)
+            self._log_line(proc, f"=== превышен лимит памяти: {proc.rss_mb:.0f} МБ из {proc.module.mem_mb} ===")
+            proc.stopping = False
+            try:
+                os.killpg(proc.process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            if self.on_problem:
+                await self.on_problem(proc.instance_id, "memory", f"{proc.rss_mb:.0f} МБ")

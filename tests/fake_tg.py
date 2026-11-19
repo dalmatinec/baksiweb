@@ -40,6 +40,7 @@ class FakeSession(BaseSession):
     answers: list[str] = field(default_factory=list)
     forums: set[int] = field(default_factory=set)
     commands: dict = field(default_factory=dict)
+    reaction_emoji: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         BaseSession.__init__(self)
@@ -93,6 +94,7 @@ class FakeSession(BaseSession):
             return True
         if isinstance(method, SetMessageReaction):
             self.reactions.append((chat_id, method.message_id))
+            self.reaction_emoji[(chat_id, method.message_id)] = [r.emoji for r in method.reaction or []]
             return True
         if isinstance(method, SetMyCommands):
             scope = getattr(method.scope, "chat_id", None)

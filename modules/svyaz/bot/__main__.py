@@ -466,8 +466,8 @@ async def set_commands(sv: Svyaz, uid: int) -> None:
 
 
 async def mark_delivered(sv: Svyaz, message: Message) -> None:
-    try:  # отметка «доставлено» без лишних сообщений
-        await sv.bot.set_message_reaction(message.chat.id, message.message_id, [ReactionTypeEmoji(emoji="👌")])
+    try:  # 👍 на сообщении оператора: ответ ушёл клиенту (видят и оператор, и участники группы)
+        await sv.bot.set_message_reaction(message.chat.id, message.message_id, [ReactionTypeEmoji(emoji="👍")])
     except Exception:
         pass
 

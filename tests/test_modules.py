@@ -206,7 +206,7 @@ class SvyazTests(ModuleBase):
         self.assertRegex(self.texts(41), r"Данияр</b> ответил в \d\d:\d\d")
         self.assertEqual(self.session.to(41, "copy")[-1].source_id, 91, "второй оператор видит сам ответ")
         self.assertNotIn("ответил в", self.texts(SELLER), "себе зеркало не шлём")
-        self.assertIn((SELLER, 91), self.session.reactions)
+        self.assertEqual(self.session.reaction_emoji[(SELLER, 91)], ["👍"], "оператор видит, что ответ ушёл")
         # без кнопки «Ответить»: копии без клавиатуры, сообщение без реплая клиенту не уходит
         self.assertIsNone(self.session.to(SELLER, "copy")[0].markup)
         await self.feed(message_update(41, user(41, "Ерлан"), "без реплая", mid=99))
@@ -333,6 +333,7 @@ class SvyazTests(ModuleBase):
         await self.feed(message_update(GROUP, user(77, "Участник"), "Слушаю", mid=600, reply_to=copy.message_id))
         self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 600)
         self.assertIn("Участник</b> ответил", self.texts(SELLER))
+        self.assertEqual(self.session.reaction_emoji[(GROUP, 600)], ["👍"], "в группе тоже видно, что ответ ушёл")
         # сообщение в группе без реплая клиенту не уходит
         await self.feed(message_update(GROUP, user(77, "Участник"), "болтаем", mid=601))
         self.assertNotIn(601, [s.source_id for s in self.session.to(CLIENT, "copy")])

@@ -93,5 +93,39 @@ class HubTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Админка", self.last(CLIENT).text)
 
 
+    async def test_design_in_telegram(self):
+        from aiogram.types import MessageEntity
+        await self.feed(message_update(OWNER, user(OWNER), "/start"))
+        await self.feed(callback_update(OWNER, user(OWNER), "des"))
+        self.assertIn("Оформление ботов", self.last(OWNER).text)
+        await self.feed(callback_update(OWNER, user(OWNER), "des:t:hub"))
+        await self.feed(callback_update(OWNER, user(OWNER), "des:x:hub:catalog"))
+        # текст с жирным и премиум-эмодзи: сохраняется как HTML
+        text = "Каталог 🔥"
+        ents = [MessageEntity(type="bold", offset=0, length=7),
+                MessageEntity(type="custom_emoji", offset=8, length=2, custom_emoji_id="5368324170671202286")]
+        await self.feed(message_update(OWNER, user(OWNER), text, entities=ents))
+        saved = self.app.design.values["texts"]["catalog"]
+        self.assertIn("<b>Каталог</b>", saved)
+        self.assertIn('<tg-emoji emoji-id="5368324170671202286">', saved)
+        # кнопка: премиум-эмодзи в начале становится иконкой
+        await self.feed(callback_update(OWNER, user(OWNER), "des:bt:hub:h_cat"))
+        await self.feed(message_update(OWNER, user(OWNER), "🛍 Магазин ботов",
+                                       entities=[MessageEntity(type="custom_emoji", offset=0, length=2, custom_emoji_id="777")]))
+        btn = self.app.design.values["buttons"]["h_cat"]
+        self.assertEqual(btn, {"text": "Магазин ботов", "icon": "777"})
+        await self.feed(callback_update(OWNER, user(OWNER), "des:bs:hub:h_cat:danger"))
+        self.assertEqual(self.app.design.values["buttons"]["h_cat"]["style"], "danger")
+        await self.feed(callback_update(OWNER, user(OWNER), "des:l:hub:main_cols"))
+        self.assertEqual(self.app.design.values["layout"]["main_cols"], 3)
+        # меню клиента уже в новом виде
+        await self.feed(message_update(CLIENT, user(CLIENT), "/start"))
+        first = [s for s in self.session.sent if s.chat_id == CLIENT][-1].markup.inline_keyboard[0][0]
+        self.assertEqual((first.text, first.icon_custom_emoji_id, first.style), ("Магазин ботов", "777", "danger"))
+        # не владелец в оформление не попадает
+        await self.feed(callback_update(CLIENT, user(CLIENT), "des"))
+        self.assertNotIn("Оформление", self.last(CLIENT).text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -829,11 +829,19 @@ function tgPreview(html) {
     if (node.nodeType === 3) return document.createTextNode(node.textContent);
     if (node.nodeType !== 1) return null;
     const tag = node.tagName.toUpperCase();
-    if (tag === "TG-EMOJI") return h("span", { class: "tg-premium", title: "премиум-эмодзи" }, node.textContent);
+    if (tag === "TG-EMOJI") return emojiImg(node.getAttribute("emoji-id"), node.textContent);
     const kids = [...node.childNodes].map(walk);
     return TG_ALLOWED[tag] ? h(TG_ALLOWED[tag], {}, kids) : h("span", {}, kids);
   };
   return [...doc.body.firstChild.childNodes].map(walk);
+}
+
+// Премиум-эмодзи в превью: настоящая картинка (миниатюра стикера через бота), если не вышло - обычный символ
+function emojiImg(id, fallback) {
+  if (!id || !/^\d+$/.test(id)) return h("span", {}, fallback || "★");
+  const img = h("img", { class: "tg-emoji", src: `/api/admin/emoji/${id}`, alt: fallback || "★", title: "премиум-эмодзи" });
+  img.addEventListener("error", () => img.replaceWith(h("span", { class: "tg-premium" }, fallback || "★")));
+  return img;
 }
 
 async function pageAdminDesign(slug) {
@@ -855,7 +863,7 @@ async function pageAdminDesign(slug) {
     const d = defBtn[key] || { default: key };
     const o = vals.buttons[key] || {};
     const style = o.style !== undefined ? o.style : d.style;
-    return [h("span", { class: "tg-btn" + (style ? " " + style : "") }, o.icon ? h("span", { class: "tg-premium", title: "премиум-иконка" }, "★") : null, o.text || d.default)];
+    return [h("span", { class: "tg-btn" + (style ? " " + style : "") }, o.icon ? emojiImg(o.icon, "★") : null, o.text || d.default)];
   };
   function renderPreview() {
     screens.replaceChildren(...(sc.screens || []).map((x, i) => h("button", { class: "btn small" + (i === screen ? " primary" : ""), onclick: () => { screen = i; renderPreview(); } }, x.title)));
@@ -889,8 +897,10 @@ async function pageAdminDesign(slug) {
     const style = h("select", { "aria-label": `${x.label}: цвет`, onchange: (e) => set("style", e.target.value === "default" ? undefined : e.target.value) },
       [["default", x.style ? `Стандарт (${({ primary: "синяя", success: "зелёная", danger: "красная" })[x.style]})` : "Стандарт"], ["", "Обычная"], ["primary", "Синяя"], ["success", "Зелёная"], ["danger", "Красная"]]
         .map(([v, l]) => h("option", { value: v, selected: (o.style === undefined ? "default" : (o.style || "")) === v }, l)));
-    const icon = h("input", { type: "text", inputmode: "numeric", value: o.icon || "", placeholder: "ID премиум-эмодзи", "aria-label": `${x.label}: премиум-иконка`, oninput: (e) => set("icon", e.target.value.trim()) });
-    return h("div", { class: "btn-edit" }, h("b", {}, x.label), h("div", { class: "btn-edit-grid" }, text, style, icon));
+    const iconView = h("span", { class: "icon-view" }, o.icon ? emojiImg(o.icon, "★") : null);
+    const icon = h("input", { type: "text", inputmode: "numeric", value: o.icon || "", placeholder: "ID премиум-эмодзи", "aria-label": `${x.label}: премиум-иконка`,
+      oninput: (e) => { const v = e.target.value.trim(); set("icon", v); iconView.replaceChildren(/^\d{5,}$/.test(v) ? emojiImg(v, "★") : ""); } });
+    return h("div", { class: "btn-edit" }, h("b", {}, x.label), h("div", { class: "btn-edit-grid" }, text, style, h("div", { class: "icon-field" }, iconView, icon)));
   });
   const layoutFields = (sc.layout || []).map((x) => h("label", { class: "field" }, h("span", {}, x.label),
     h("select", { onchange: (e) => { vals.layout[x.key] = +e.target.value; renderPreview(); } },
@@ -919,15 +929,15 @@ async function pageAdminDesign(slug) {
     h("div", { class: "dash" },
       h("div", { class: "stack" },
         textFields.length ? h("div", { class: "panel", style: "display:grid;gap:16px" }, h("h2", { style: "margin:0" }, "Тексты"),
-          h("p", { class: "hint" }, "Можно HTML: <b>жирный</b>, <i>курсив</i>, <a href=\"…\">ссылка</a>, <blockquote>цитата</blockquote>. Премиум-эмодзи в тексте: <tg-emoji emoji-id=\"ID\">😀</tg-emoji>"),
+          h("p", { class: "hint" }, "Тексты с премиум-эмодзи удобнее менять в Telegram: хаб-бот → Админка → 🎨 Оформление → просто пришлите текст, эмодзи и форматирование сохранятся. Здесь можно править HTML: <b>жирный</b>, <i>курсив</i>, <a href=\"…\">ссылка</a>."),
           textFields) : null,
         buttonFields.length ? h("div", { class: "panel", style: "display:grid;gap:14px" }, h("h2", { style: "margin:0" }, "Кнопки"),
-          h("p", { class: "hint" }, "Пустая подпись - останется стандартная. ID премиум-эмодзи: пришлите нужный премиум-эмодзи своему хаб-боту, он ответит его ID с кнопкой «Скопировать»."),
+          h("p", { class: "hint" }, "Пустая подпись - останется стандартная. Премиум-иконку проще поставить в Telegram: хаб-бот → Админка → 🎨 Оформление → кнопка → пришлите подпись с премиум-эмодзи в начале. Здесь она сразу появится в превью."),
           buttonFields) : null,
         layoutFields.length ? h("div", { class: "panel", style: "display:grid;gap:14px" }, h("h2", { style: "margin:0" }, "Раскладка"), layoutFields) : null,
         h("div", { class: "actions" }, save)),
       h("div", { class: "panel design-preview" }, h("h2", {}, "Как это увидят"), screens, preview,
-        h("p", { class: "hint" }, "★ - здесь будет премиум-иконка. Подстановки показаны на примере."))),
+        h("p", { class: "hint" }, "Премиум-эмодзи показаны картинками. Подстановки - на примере."))),
   ]);
   renderPreview();
 }

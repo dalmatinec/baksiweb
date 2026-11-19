@@ -115,12 +115,13 @@ def user(uid: int, name: str = "User", username: str | None = None) -> User:
 
 
 def message_update(chat_id: int, from_user: User, text: str | None, mid: int | None = None,
-                   reply_to: int | None = None, thread: int | None = None, chat_type: str | None = None) -> Update:
+                   reply_to: int | None = None, thread: int | None = None, chat_type: str | None = None,
+                   entities: list | None = None) -> Update:
     chat = Chat(id=chat_id, type=chat_type or ("private" if chat_id > 0 else "supergroup"), title=None if chat_id > 0
                 else "Group")
     reply = Message(message_id=reply_to, date=int(time.time()), chat=chat, from_user=BOT) if reply_to else None
     msg = Message(message_id=mid or next(_uid) + 100, date=int(time.time()), chat=chat, from_user=from_user,
-                  text=text, reply_to_message=reply, message_thread_id=thread,
+                  text=text, reply_to_message=reply, message_thread_id=thread, entities=entities,
                   is_topic_message=True if thread else None)
     return Update(update_id=next(_uid), message=msg)
 

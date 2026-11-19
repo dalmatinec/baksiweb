@@ -42,6 +42,8 @@ class Form(StatesGroup):
     promo = State()
     balance_promo = State()
     broadcast = State()
+    design_text = State()
+    design_button = State()
 
 
 def esc(text: Any) -> str:
@@ -651,6 +653,7 @@ async def admin(call: CallbackQuery, app: App) -> None:
     rows = []
     if app.cfg.public_url:
         rows.append([b("🌐 Веб-админка", "admweb", style="primary")])
+    rows.append([b("🎨 Оформление ботов", "des", style="success")])
     rows.append([b("💾 Бэкап сейчас", "admbackup"), b("📣 Рассылка", "admcast")])
     rows.append([b("🔄 Обновить", "adm"), b("⬅️ Назад", "home")])
     await render(call, await admin_stats(app), kb(*rows))
@@ -736,6 +739,239 @@ async def give(message: Message, command: CommandObject, app: App) -> None:
     await message.answer(f"Готово. Баланс клиента: {money(balance)}")
     if cents > 0:
         app.notifier.send(int(parts[0]), f"🎁 На ваш баланс зачислено {money(cents)}")
+
+
+# --- оформление ботов прямо в Telegram (премиум-эмодзи ставятся как обычно) -----
+STYLE_NAMES = {None: "обычная", "primary": "синяя", "success": "зелёная", "danger": "красная"}
+
+
+def _schema_item(schema: dict, kind: str, key: str) -> dict | None:
+    return next((x for x in schema.get(kind, []) if x["key"] == key), None)
+
+
+async def design_home(target: Message | CallbackQuery, app: App) -> None:
+    from .. import design
+    rows = [[b(t["title"], f"des:t:{t['slug']}")] for t in design.targets(app)]
+    rows.append([b("⬅️ Назад", "adm")])
+    text = ("<b>🎨 Оформление ботов</b>\n\nВыберите бота. Тексты присылайте прямо сюда: жирный, курсив, ссылки и "
+            "премиум-эмодзи сохранятся как есть. Для кнопки пришлите подпись с премиум-эмодзи в начале - он станет "
+            "иконкой.")
+    if app.cfg.public_url:
+        text += "\n\nВсё то же самое, плюс превью сразу всех экранов, есть в веб-админке → «Оформление»."
+    await render(target, text, kb(*rows))
+
+
+async def design_target(target: Message | CallbackQuery, app: App, slug: str) -> None:
+    from .. import design
+    t = design.target(app, slug)
+    vals = await design.values(app, slug)
+    sc = t["schema"]
+    rows = []
+    for x in sc.get("texts", []):
+        mark = "✅ " if x["key"] in vals["texts"] else ""
+        rows.append([b(f"{mark}✏️ {x['label']}", f"des:x:{slug}:{x['key']}")])
+    btns = []
+    for x in sc.get("buttons", []):
+        mark = "✅ " if x["key"] in vals["buttons"] else ""
+        btns.append(b(f"{mark}🔘 {x['label']}", f"des:b:{slug}:{x['key']}"))
+    rows += [btns[i:i + 2] for i in range(0, len(btns), 2)]
+    for x in sc.get("layout", []):
+        n = vals["layout"].get(x["key"], x["default"])
+        rows.append([b(f"↔️ {x['label']}: {n}", f"des:l:{slug}:{x['key']}")])
+    rows.append([b("⬅️ К списку ботов", "des")])
+    await render(target, f"<b>🎨 {esc(t['title'])}</b>\n{esc(t['note'])}\n\n✅ - уже изменено вами.", kb(*rows))
+
+
+@router.callback_query(F.data == "des")
+async def des_home(call: CallbackQuery, app: App, state: FSMContext) -> None:
+    if not app.is_owner(call.from_user.id):
+        return await call.answer()
+    await state.set_state(None)
+    await design_home(call, app)
+
+
+@router.callback_query(F.data.startswith("des:t:"))
+async def des_target(call: CallbackQuery, app: App, state: FSMContext) -> None:
+    if not app.is_owner(call.from_user.id):
+        return await call.answer()
+    await state.set_state(None)
+    await design_target(call, app, call.data.split(":", 2)[2])
+
+
+@router.callback_query(F.data.startswith("des:l:"))
+async def des_layout(call: CallbackQuery, app: App) -> None:
+    from .. import design
+    if not app.is_owner(call.from_user.id):
+        return await call.answer()
+    _, _, slug, key = call.data.split(":", 3)
+    vals = await design.values(app, slug)
+    item = _schema_item(design.target(app, slug)["schema"], "layout", key)
+    current = int(vals["layout"].get(key, item["default"] if item else 1))
+    vals["layout"][key] = current % 3 + 1
+    await design.save(app, slug, vals, call.from_user.id)
+    await call.answer(f"Теперь в ряд: {vals['layout'][key]}")
+    await design_target(call, app, slug)
+
+
+@router.callback_query(F.data.startswith("des:x:"))
+async def des_text(call: CallbackQuery, app: App, state: FSMContext) -> None:
+    from .. import design
+    if not app.is_owner(call.from_user.id):
+        return await call.answer()
+    _, _, slug, key = call.data.split(":", 3)
+    item = _schema_item(design.target(app, slug)["schema"], "texts", key)
+    vals = await design.values(app, slug)
+    current = vals["texts"].get(key) or item["default"]
+    await call.answer()
+    try:
+        await call.message.answer(current)
+    except TelegramBadRequest:
+        await call.message.answer(esc(current))
+    hint = f"\nПодстановки: {esc(item['hint'])}" if item.get("hint") else ""
+    await state.set_state(Form.design_text)
+    await state.update_data(design=[slug, key])
+    await call.message.answer(f"⬆️ Сейчас так выглядит «{esc(item['label'])}».\n\nПришлите новый текст одним сообщением: "
+                              f"форматирование и премиум-эмодзи сохранятся.{hint}",
+                              reply_markup=kb([b("↩️ Вернуть стандартный", f"des:xr:{slug}:{key}")],
+                                              [b("Отмена", f"des:t:{slug}")]))
+
+
+@router.callback_query(F.data.startswith("des:xr:"))
+async def des_text_reset(call: CallbackQuery, app: App, state: FSMContext) -> None:
+    from .. import design
+    if not app.is_owner(call.from_user.id):
+        return await call.answer()
+    _, _, slug, key = call.data.split(":", 3)
+    vals = await design.values(app, slug)
+    vals["texts"].pop(key, None)
+    await design.save(app, slug, vals, call.from_user.id)
+    await state.set_state(None)
+    await call.answer("Вернул стандартный текст")
+    await design_target(call, app, slug)
+
+
+@router.message(Form.design_text)
+async def des_text_input(message: Message, app: App, state: FSMContext) -> None:
+    from .. import design
+    if not app.is_owner(message.from_user.id) or not (message.text or message.caption):
+        return
+    slug, key = (await state.get_data()).get("design", [None, None])
+    vals = await design.values(app, slug)
+    vals["texts"][key] = message.html_text
+    try:
+        await design.save(app, slug, vals, message.from_user.id)
+    except design.DesignError as exc:
+        await message.answer(f"❌ {esc(exc)}")
+        return
+    await state.set_state(None)
+    await message.answer("✅ Сохранено и применено. Так это увидят пользователи:")
+    await message.answer(vals["texts"][key])
+    await design_target(message, app, slug)
+
+
+def _button_preview(item: dict, value: dict):
+    style = value.get("style", item.get("style"))
+    return b(value.get("text") or item["default"], "noop", style=style if style in ("primary", "success", "danger") else None,
+             icon=value.get("icon"))
+
+
+async def design_button(target: Message | CallbackQuery, app: App, slug: str, key: str) -> None:
+    from .. import design
+    item = _schema_item(design.target(app, slug)["schema"], "buttons", key)
+    value = (await design.values(app, slug))["buttons"].get(key, {})
+    style = value.get("style", item.get("style"))
+    p = f"des:bs:{slug}:{key}:"
+    rows = [[_button_preview(item, value)],
+            [b("Обычная", p + "none"), b("Синяя", p + "primary", style="primary")],
+            [b("Зелёная", p + "success", style="success"), b("Красная", p + "danger", style="danger")],
+            [b("✏️ Подпись и премиум-иконка", f"des:bt:{slug}:{key}")],
+            [b("🗑 Убрать иконку", f"des:bi:{slug}:{key}") if value.get("icon") else None,
+             b("↩️ Стандартная", f"des:br:{slug}:{key}")],
+            [b("⬅️ Назад", f"des:t:{slug}")]]
+    text = (f"<b>🔘 {esc(item['label'])}</b>\n\nВверху - как кнопка выглядит сейчас.\n"
+            f"Подпись: {esc(value.get('text') or item['default'])}\nЦвет: {STYLE_NAMES.get(style, 'обычная')}\n"
+            f"Премиум-иконка: {'есть' if value.get('icon') else 'нет'}")
+    await render(target, text, kb(*rows))
+
+
+@router.callback_query(F.data.startswith("des:b:"))
+async def des_button(call: CallbackQuery, app: App, state: FSMContext) -> None:
+    if not app.is_owner(call.from_user.id):
+        return await call.answer()
+    await state.set_state(None)
+    _, _, slug, key = call.data.split(":", 3)
+    await design_button(call, app, slug, key)
+
+
+@router.callback_query(F.data.startswith("des:bs:") | F.data.startswith("des:bi:") | F.data.startswith("des:br:"))
+async def des_button_change(call: CallbackQuery, app: App) -> None:
+    from .. import design
+    if not app.is_owner(call.from_user.id):
+        return await call.answer()
+    parts = call.data.split(":")
+    action, slug, key = parts[1], parts[2], parts[3]
+    vals = await design.values(app, slug)
+    cur = dict(vals["buttons"].get(key, {}))
+    if action == "bs":
+        cur["style"] = None if parts[4] == "none" else parts[4]
+    elif action == "bi":
+        cur.pop("icon", None)
+    else:
+        cur = {}
+    if cur:
+        vals["buttons"][key] = cur
+    else:
+        vals["buttons"].pop(key, None)
+    await design.save(app, slug, vals, call.from_user.id)
+    await call.answer("Сохранено")
+    await design_button(call, app, slug, key)
+
+
+@router.callback_query(F.data.startswith("des:bt:"))
+async def des_button_text(call: CallbackQuery, app: App, state: FSMContext) -> None:
+    if not app.is_owner(call.from_user.id):
+        return await call.answer()
+    _, _, slug, key = call.data.split(":", 3)
+    await state.set_state(Form.design_button)
+    await state.update_data(design=[slug, key])
+    await call.message.answer("Пришлите подпись кнопки. Поставьте премиум-эмодзи в начале - он станет иконкой кнопки, "
+                              "остальное - подписью.\nМожно прислать только премиум-эмодзи: тогда поменяется только "
+                              "иконка.", reply_markup=kb([b("Отмена", f"des:b:{slug}:{key}")]))
+    await call.answer()
+
+
+@router.message(Form.design_button, F.text)
+async def des_button_input(message: Message, app: App, state: FSMContext) -> None:
+    from .. import design
+    if not app.is_owner(message.from_user.id):
+        return
+    slug, key = (await state.get_data()).get("design", [None, None])
+    label = message.text
+    icon = None
+    for e in message.entities or []:
+        if e.type == "custom_emoji" and e.custom_emoji_id:
+            icon = e.custom_emoji_id
+            label = label.replace(e.extract_from(message.text), "", 1)
+            break
+    label = " ".join(label.split())[:64]
+    vals = await design.values(app, slug)
+    cur = dict(vals["buttons"].get(key, {}))
+    if label:
+        cur["text"] = label
+    if icon:
+        cur["icon"] = icon
+    if not label and not icon:
+        await message.answer("Пришлите подпись или премиум-эмодзи.")
+        return
+    vals["buttons"][key] = cur
+    try:
+        await design.save(app, slug, vals, message.from_user.id)
+    except design.DesignError as exc:
+        await message.answer(f"❌ {esc(exc)}")
+        return
+    await state.set_state(None)
+    await message.answer("✅ Сохранено и применено.")
+    await design_button(message, app, slug, key)
 
 
 def _custom_emoji(message: Message) -> list[tuple[str, str]]:

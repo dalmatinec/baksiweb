@@ -207,15 +207,20 @@ class SvyazTests(ModuleBase):
         self.assertEqual(self.session.to(41, "copy")[-1].source_id, 91, "второй оператор видит сам ответ")
         self.assertNotIn("ответил в", self.texts(SELLER), "себе зеркало не шлём")
         self.assertIn((SELLER, 91), self.session.reactions)
-        await self.feed(callback_update(41, user(41, "Ерлан"), "sv:act:1"))
-        self.assertIn("Последним отвечал(а): Данияр", self.texts(41))
-        await self.feed(message_update(41, user(41, "Ерлан"), "Дополню", mid=92))
+        # без кнопки «Ответить»: копии без клавиатуры, сообщение без реплая клиенту не уходит
+        self.assertIsNone(self.session.to(SELLER, "copy")[0].markup)
+        await self.feed(message_update(41, user(41, "Ерлан"), "без реплая", mid=99))
+        self.assertNotIn(99, [s.source_id for s in self.session.to(CLIENT, "copy")])
+        self.assertIn("реплаем", self.texts(41))
+        await self.feed(message_update(41, user(41, "Ерлан"), "Дополню", mid=92,
+                                       reply_to=self.session.to(41, "copy")[0].message_id))
         self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 92)
         self.assertIn("Ерлан</b> ответил", self.texts(SELLER))
         await self.feed(callback_update(41, user(41, "Ерлан"), "sv:hist:1"))
         self.assertEqual([s.source_id for s in self.session.to(41, "copy")][-3:], [90, 91, 92])
         self.assertIn("🎧 Данияр", self.texts(41))
-        await self.feed(message_update(41, user(41), "/close"))
+        self.assertIn("Последним отвечал(а): Ерлан", self.texts(41))
+        await self.feed(message_update(41, user(41), "/close", reply_to=self.session.to(41, "copy")[-3].message_id))
         self.assertEqual(await self.db.value("SELECT status FROM dialogs WHERE id = 1"), "closed")
         self.assertIn("закрыто", self.texts(SELLER))
 
@@ -232,8 +237,9 @@ class SvyazTests(ModuleBase):
         self.assertIn("ждут ответа: 1", self.texts(SELLER))
         await self.feed(callback_update(SELLER, user(SELLER), "sv:hist:1"))
         self.assertEqual([s.source_id for s in self.session.to(SELLER, "copy")][-2:], [90, 91])
-        await self.feed(callback_update(SELLER, user(SELLER), "sv:act:1"))
-        await self.feed(message_update(SELLER, user(SELLER, "Данияр"), "Мы тут", mid=92))
+        # реплай на сообщение из истории доходит клиенту
+        hist_copy = self.session.to(SELLER, "copy")[-2].message_id
+        await self.feed(message_update(SELLER, user(SELLER, "Данияр"), "Мы тут", mid=92, reply_to=hist_copy))
         self.assertEqual(self.session.to(CLIENT, "copy")[-1].source_id, 92)
 
     async def test_owner_becomes_operator_by_invite_and_removal(self):
@@ -249,10 +255,51 @@ class SvyazTests(ModuleBase):
     async def test_non_operator_cannot_reply(self):
         await self.add_operator(SELLER, "Данияр")
         await self.feed(message_update(CLIENT, user(CLIENT), "Привет", mid=90))
-        await self.feed(callback_update(OWNER, user(OWNER), "sv:act:1"))
-        self.assertIn("только операторы", self.session.answers[-1])
-        await self.feed(message_update(OWNER, user(OWNER), "Я владелец", mid=91))
+        await self.feed(message_update(OWNER, user(OWNER), "Я владелец", mid=91,
+                                       reply_to=self.session.to(SELLER, "copy")[-1].message_id))
         self.assertNotIn(91, [s.source_id for s in self.session.to(CLIENT, "copy")])
+
+    async def test_filters_stop_words_auto_reply(self):
+        await self.add_operator(SELLER, "Данияр")
+        await self.feed(message_update(OWNER, user(OWNER), "/admin"))
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:fladd"))
+        await self.feed(message_update(OWNER, user(OWNER), "прайс, цен*\nкак купить"))
+        await self.feed(message_update(OWNER, user(OWNER), "Прайс: example.com/price"))
+        self.assertIn("Фильтр сохранён", self.texts(OWNER))
+        self.assertEqual(json.loads(await self.db.value("SELECT words FROM filters")), ["прайс", "цен*", "как купить"])
+        for i, text in enumerate(["Скиньте ПРАЙС", "какие цены?", "Подскажите, как купить"]):
+            await self.feed(message_update(CLIENT, user(CLIENT), text, mid=700 + i))
+            self.assertEqual(self.session.to(CLIENT, "send")[-1].text, "Прайс: example.com/price")
+        self.assertEqual(self.session.to(SELLER, "copy"), [], "до оператора не дошло")
+        self.assertEqual(await self.db.value("SELECT COUNT(*) FROM dialogs"), 0)
+        self.assertEqual(await self.db.value("SELECT hits FROM filters"), 3)
+        # слово целиком: «прайсы» без звёздочки не ловится, обычное сообщение доходит
+        await self.feed(message_update(CLIENT, user(CLIENT), "Пришлите прайсы и спецификацию", mid=710))
+        self.assertEqual(self.session.to(SELLER, "copy")[-1].source_id, 710)
+        # фильтр без ответа: просто не пересылается
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:fladd"))
+        await self.feed(message_update(OWNER, user(OWNER), "казино"))
+        await self.feed(callback_update(OWNER, user(OWNER), "sva:flnone"))
+        sent = len(self.session.to(CLIENT, "send"))
+        await self.feed(message_update(CLIENT, user(CLIENT), "Лучшее Казино тут", mid=711))
+        self.assertEqual(len(self.session.to(CLIENT, "send")), sent)
+        self.assertNotIn(711, [s.source_id for s in self.session.to(SELLER, "copy")])
+        # удаление
+        rule = await self.db.value("SELECT id FROM filters WHERE words LIKE '%казино%'")
+        await self.feed(callback_update(OWNER, user(OWNER), f"sva:fldel:{rule}"))
+        await self.feed(message_update(CLIENT, user(CLIENT), "казино", mid=712))
+        self.assertEqual(self.session.to(SELLER, "copy")[-1].source_id, 712)
+
+    async def test_command_menu_by_role(self):
+        await self.feed(message_update(OWNER, user(OWNER), "/start"))
+        self.assertIn("admin", self.session.commands[OWNER])
+        await self.feed(message_update(CLIENT, user(CLIENT), "/start"))
+        self.assertNotIn(CLIENT, self.session.commands, "клиенту личное меню не ставим, у него только /start")
+        self.assertNotIn("Вы владелец", self.session.to(CLIENT, "send")[-1].text)
+        await self.add_operator(SELLER, "Данияр")
+        self.assertEqual(self.session.commands[SELLER], ["start", "dialogs", "close"])
+        await self.feed(callback_update(OWNER, user(OWNER), f"sva:oprm:{SELLER}"))
+        self.assertEqual(self.session.commands[SELLER], ["start"])
 
     async def test_texts_menu_edit_and_reset(self):
         await self.feed(callback_update(OWNER, user(OWNER), "sva:texts"))
@@ -324,9 +371,8 @@ class SvyazTests(ModuleBase):
     async def test_blocked_client_reported(self):
         await self.add_operator(SELLER, "Данияр")
         await self.feed(message_update(CLIENT, user(CLIENT), "Привет"))
-        await self.feed(callback_update(SELLER, user(SELLER), "sv:act:1"))
         self.session.blocked.add(CLIENT)
-        await self.feed(message_update(SELLER, user(SELLER), "Ответ"))
+        await self.feed(message_update(SELLER, user(SELLER), "Ответ", reply_to=self.session.to(SELLER, "copy")[-1].message_id))
         self.assertIn("заблокировал", self.session.to(SELLER, "send")[-1].text)
 
     async def test_blocked_operator_does_not_break_others(self):

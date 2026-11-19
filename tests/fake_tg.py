@@ -10,7 +10,7 @@ from aiogram import Bot
 from aiogram.client.session.base import BaseSession
 from aiogram.exceptions import TelegramForbiddenError
 from aiogram.methods import (AnswerCallbackQuery, CloseForumTopic, CopyMessage, CreateForumTopic, DeleteMessage,
-                             DeleteWebhook, EditMessageReplyMarkup, GetChat, EditMessageText, ForwardMessage, GetChatMember,
+                             DeleteWebhook, EditMessageReplyMarkup, GetChat, SetMyCommands, EditMessageText, ForwardMessage, GetChatMember,
                              GetMe, SendMessage, SetMessageReaction, TelegramMethod)
 from aiogram.types import (CallbackQuery, Chat, ChatFullInfo, ChatMemberAdministrator, ChatMemberMember, ForumTopic, Message,
                            MessageId, Update, User)
@@ -39,6 +39,7 @@ class FakeSession(BaseSession):
     reactions: list[tuple[int, int]] = field(default_factory=list)
     answers: list[str] = field(default_factory=list)
     forums: set[int] = field(default_factory=set)
+    commands: dict = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         BaseSession.__init__(self)
@@ -92,6 +93,10 @@ class FakeSession(BaseSession):
             return True
         if isinstance(method, SetMessageReaction):
             self.reactions.append((chat_id, method.message_id))
+            return True
+        if isinstance(method, SetMyCommands):
+            scope = getattr(method.scope, "chat_id", None)
+            self.commands[scope] = [c.command for c in method.commands]
             return True
         if isinstance(method, GetChat):
             return ChatFullInfo.model_construct(id=chat_id, type="supergroup", is_forum=chat_id in self.forums)

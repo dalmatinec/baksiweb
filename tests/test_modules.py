@@ -69,109 +69,87 @@ class ExpressTests(ModuleBase):
         self.dp.include_router(baksi_kit.bind_router())
         self.dp.include_router(self.mod.router)
 
+    def group_sends(self):
+        """Сообщения бота в группу, кроме подтверждения привязки."""
+        return [x for x in self.session.to(GROUP, "send") if "привяз" not in (x.text or "").lower()]
+
     async def test_full_cycle(self):
         await self.feed(message_update(CLIENT, user(CLIENT, "Айгерим"), "Нужен логотип"))
         self.assertIn("ещё настраивается", self.session.to(CLIENT)[-1].text)
         await self.bind()
+        # /start тоже уходит в группу форвардом, заказчик получает приветствие
+        await self.feed(message_update(CLIENT, user(CLIENT, "Айгерим"), "/start", mid=76))
+        self.assertIn("Здравствуйте", self.session.to(CLIENT, "send")[-1].text)
+        self.assertEqual(self.session.to(GROUP, "forward")[-1].source_id, 76)
         await self.feed(message_update(CLIENT, user(CLIENT, "Айгерим"), "Нужен логотип", mid=77))
         fwd = self.session.to(GROUP, "forward")[-1]
-        self.assertEqual((fwd.from_chat, fwd.source_id), (CLIENT, 77), "заявка ушла именно форвардом")
-        control = self.session.to(GROUP, "send")[-1]
-        self.assertIn("Заявка #1", control.text)
-        self.assertIn(f"ID <code>{CLIENT}</code>", control.text)
-        self.assertIsNone(control.markup, "под заявкой в группе нет кнопок")
-        self.assertIn("Заявка отправлена", self.session.to(CLIENT)[-1].text)
-        # второе сообщение той же заявки - без новой карточки
-        await self.feed(message_update(CLIENT, user(CLIENT, "Айгерим"), "Бюджет 30к", mid=78))
-        self.assertEqual(len([s for s in self.session.to(GROUP, "send") if "Заявка #" in (s.text or "")]), 1)
-        # продавец отвечает реплаем
+        self.assertEqual((fwd.from_chat, fwd.source_id), (CLIENT, 77), "сообщение ушло именно форвардом")
+        await self.feed(message_update(CLIENT, user(CLIENT, "Айгерим"), "/help", mid=78))
+        self.assertEqual(self.session.to(GROUP, "forward")[-1].source_id, 78, "любые сообщения, и команды тоже")
+        self.assertEqual(self.group_sends(), [], "в группе ничего, кроме форвардов: ни карточек, ни кнопок")
+        self.assertEqual(len(self.session.to(CLIENT, "send")), 2, "заказчику - только приветствие на /start (+ «настраивается» до привязки)")
+        # исполнитель отвечает реплаем - ответ уходит заказчику, в группе 👍
         await self.feed(message_update(GROUP, user(SELLER, "Данияр"), "Возьмусь", mid=501, reply_to=fwd.message_id))
         answer = self.session.to(CLIENT, "forward")[-1]
         self.assertEqual((answer.from_chat, answer.source_id), (GROUP, 501))
         self.assertEqual(self.session.reaction_emoji[(GROUP, 501)], ["👍"])
-        # заказчик отвечает на ответ продавца
-        await self.feed(message_update(CLIENT, user(CLIENT, "Айгерим"), "Давайте", mid=79, reply_to=answer.message_id))
-        self.assertTrue(any("Ответ заказчика" in (s.text or "") for s in self.session.to(GROUP, "send")))
-        # обычный участник не может закрыть, админ группы может - командой /close реплаем
-        await self.feed(message_update(GROUP, user(SELLER), "/close", reply_to=fwd.message_id))
-        self.assertEqual(await self.db.value("SELECT status FROM tickets WHERE id = 1"), "open")
-        self.session.admins.add((GROUP, 40))
-        await self.feed(message_update(GROUP, user(40), "/close", reply_to=fwd.message_id))
-        self.assertEqual(await self.db.value("SELECT status FROM tickets WHERE id = 1"), "closed")
-        await self.feed(message_update(GROUP, user(SELLER, "Данияр"), "Ещё", mid=502, reply_to=fwd.message_id))
-        self.assertEqual(len(self.session.to(CLIENT, "forward")), 1, "в закрытую заявку не отвечаем")
+        # ответить можно хоть через неделю: ничего не закрывается
+        await self.db.run("UPDATE group_msgs SET created_at = created_at - 8 * 86400")
+        await self.feed(message_update(GROUP, user(SELLER, "Данияр"), "Ещё актуально?", mid=502, reply_to=fwd.message_id))
+        self.assertEqual(self.session.to(CLIENT, "forward")[-1].source_id, 502)
+        # заказчик отвечает - тоже просто форвард в группу
+        await self.feed(message_update(CLIENT, user(CLIENT, "Айгерим"), "Да", mid=79, reply_to=answer.message_id))
+        self.assertEqual(self.session.to(GROUP, "forward")[-1].source_id, 79)
+        self.assertEqual(self.group_sends(), [])
 
-    async def test_album_makes_one_ticket(self):
-        """Альбом приходит пачкой одновременно: заявка и карточка должны быть одни."""
+    async def test_album_all_forwarded_in_order(self):
         await self.bind()
         await asyncio.gather(*(self.feed(message_update(CLIENT, user(CLIENT), f"фото {i}", mid=300 + i)) for i in range(5)))
-        self.assertEqual(await self.db.value("SELECT COUNT(*) FROM tickets"), 1)
-        self.assertEqual(len([s for s in self.session.to(GROUP, "send") if "Заявка #" in (s.text or "")]), 1)
-        self.assertEqual(len(self.session.to(GROUP, "forward")), 5)
+        self.assertEqual(sorted(f.source_id for f in self.session.to(GROUP, "forward")), [300, 301, 302, 303, 304])
+        self.assertEqual(self.group_sends(), [])
 
-    async def test_owner_design_applies(self):
-        """Оформление от владельца платформы: текст карточки и кнопки меняются, своя правка клиента важнее."""
+    async def test_owner_greeting_design(self):
         plat = Path(os.environ["BAKSI_PLATFORM_FILE"])
         data = json.loads(plat.read_text())
-        data["ui"] = {"texts": {"card": "🔥 Новая заявка №{номер}", "greeting": "Привет от владельца"},
-                      "buttons": {}}
+        data["ui"] = {"texts": {"greeting": "Привет от владельца"}, "buttons": {}}
         plat.write_text(json.dumps(data))
         baksi_kit._platform_cache = None
-        await self.bind()
-        await self.feed(message_update(CLIENT, user(CLIENT), "Нужна помощь"))
-        card = [s for s in self.session.to(GROUP, "send") if "Новая заявка" in (s.text or "")][-1]
-        self.assertEqual(card.text, "🔥 Новая заявка №1")
         await self.feed(message_update(CLIENT, user(CLIENT), "/start"))
         self.assertEqual(self.session.to(CLIENT)[-1].text, "Привет от владельца")
         await self.ex.db.set("greeting", "Своё приветствие клиента")
         await self.feed(message_update(CLIENT, user(CLIENT), "/start"))
         self.assertEqual(self.session.to(CLIENT)[-1].text, "Своё приветствие клиента")
 
-    async def test_start_and_commands_never_forwarded(self):
+    async def test_owner_commands_not_forwarded(self):
         await self.bind()
-        await self.feed(message_update(CLIENT, user(CLIENT), "/start"))
-        await self.feed(message_update(CLIENT, user(CLIENT), "/help"))
-        self.assertEqual(self.session.to(GROUP, "forward"), [], "/start и другие команды в группу не попадают")
+        await self.feed(message_update(OWNER, user(OWNER), "/admin"))
+        await self.feed(message_update(OWNER, user(OWNER), "/start"))
+        self.assertEqual(self.session.to(GROUP, "forward"), [])
 
     async def test_ban_only_group_admins_with_rights(self):
         await self.bind()
         await self.feed(message_update(CLIENT, user(CLIENT), "Спам", mid=70))
         fwd = self.session.to(GROUP, "forward")[-1]
-        # обычный участник и админ без права блокировки не банят
         await self.feed(message_update(GROUP, user(SELLER), "/ban", reply_to=fwd.message_id))
         self.session.admins.add((GROUP, 41))
         self.session.no_ban.add((GROUP, 41))
         await self.feed(message_update(GROUP, user(41), "/ban", reply_to=fwd.message_id))
         self.assertEqual(await self.db.value("SELECT banned FROM users WHERE id = ?", CLIENT), 0)
-        # админ с правом блокировки банит реплаем на форвард
         self.session.admins.add((GROUP, 42))
         await self.feed(message_update(GROUP, user(42), "/ban", reply_to=fwd.message_id))
         self.assertEqual(await self.db.value("SELECT banned FROM users WHERE id = ?", CLIENT), 1)
         self.assertIn(f"/unban {CLIENT}", self.session.to(GROUP, "send")[-1].text)
         before = len(self.session.to(GROUP, "forward"))
         await self.feed(message_update(CLIENT, user(CLIENT), "Снова спам"))
-        self.assertEqual(len(self.session.to(GROUP, "forward")), before)
-        # разбан по ID в личке бота владельцем; клиент разбанить себя не может
+        self.assertEqual(len(self.session.to(GROUP, "forward")), before, "забаненный не попадает в группу (Express)")
         await self.feed(message_update(CLIENT, user(CLIENT), f"/unban {CLIENT}"))
         self.assertEqual(await self.db.value("SELECT banned FROM users WHERE id = ?", CLIENT), 1)
         await self.feed(message_update(OWNER, user(OWNER), f"/unban {CLIENT}"))
         self.assertEqual(await self.db.value("SELECT banned FROM users WHERE id = ?", CLIENT), 0)
-        # бан по ID в группе и разбан реплаем
         await self.feed(message_update(GROUP, user(42), f"/ban {CLIENT}"))
         self.assertEqual(await self.db.value("SELECT banned FROM users WHERE id = ?", CLIENT), 1)
         await self.feed(message_update(GROUP, user(42), "/unban", reply_to=fwd.message_id))
         self.assertEqual(await self.db.value("SELECT banned FROM users WHERE id = ?", CLIENT), 0)
-
-    async def test_ban_and_cooldown(self):
-        await self.bind()
-        await self.feed(message_update(CLIENT, user(CLIENT), "Привет"))
-        await self.feed(message_update(OWNER, user(OWNER), f"/ban {CLIENT}"))
-        before = len(self.session.to(GROUP, "forward"))
-        await self.feed(message_update(CLIENT, user(CLIENT), "Снова"))
-        self.assertEqual(len(self.session.to(GROUP, "forward")), before, "забаненный не попадает в группу")
-        await self.db.run("UPDATE users SET banned = 0")
-        await self.feed(message_update(CLIENT, user(CLIENT), "Новая"))
-        self.assertIn("через", self.session.to(CLIENT)[-1].text, "пауза между заявками")
 
     async def test_admin_settings(self):
         await self.feed(message_update(OWNER, user(OWNER), "/admin"))
@@ -181,6 +159,7 @@ class ExpressTests(ModuleBase):
         self.assertTrue(all(len(t) <= 16 for t in labels), f"короткие кнопки: {labels}")
         for section in ("exa:texts", "exa:set", "exa:bans"):
             await self.feed(callback_update(OWNER, user(OWNER), section))
+        self.assertNotIn("Закры", " ".join(s.text or "" for s in self.session.to(OWNER)), "никакого закрытия")
         await self.feed(callback_update(OWNER, user(OWNER), "exa:tog:anonymous"))
         self.assertTrue(self.ex.opt("anonymous"))
         await self.feed(callback_update(OWNER, user(OWNER), "exa:txt:greeting"))

@@ -47,6 +47,7 @@ class MediaStore:
         self.dir = media_dir
         self.bot_id = 0
         self.files: dict[int, MediaFile] = {}
+        self._save_lock = asyncio.Lock()  # проверка «такой файл уже есть» и вставка - одним шагом
         self.file_ids: dict[int, str] = {}
         self.on_missing: Callable[[int], Awaitable[None]] | None = None
         self._reported_missing: set[int] = set()
@@ -161,11 +162,17 @@ class MediaStore:
         if len(data) > limit:
             raise MediaError(f"Файл весит {len(data) / 1048576:.1f} МБ, а можно не больше {limit / 1048576:.0f} МБ.")
         sha = hashlib.sha256(data).hexdigest()
+        async with self._save_lock:
+            return await self._store(sha, data, kind, ext, file_id, reusable)
 
-        existing = await self.db.fetchone("SELECT id FROM media WHERE sha256 = ?", (sha,))
+    async def _store(self, sha: str, data: bytes, kind: str, ext: str, file_id: str, reusable: bool) -> int:
+        existing = await self.db.fetchone("SELECT id, path, kind, size FROM media WHERE sha256 = ?", (sha,))
         if existing is not None:
             media_id = existing["id"]
-            m = self.files[media_id]
+            m = self.files.get(media_id)
+            if m is None:  # есть в базе, но не в памяти (например, после восстановления) - подхватываем
+                m = MediaFile(media_id, self.dir / existing["path"], existing["kind"], existing["size"])
+                self.files[media_id] = m
             if not m.path.exists():  # файл потерян - восстанавливаем из присланного
                 await asyncio.to_thread(_write_atomic, m.path, data)
                 self._reported_missing.discard(media_id)
@@ -174,10 +181,11 @@ class MediaStore:
         name = f"{sha}.{ext}"
         path = self.dir / name
         await asyncio.to_thread(_write_atomic, path, data)
-        media_id = await self.db.execute(
-            "INSERT INTO media(sha256, path, kind, size, created_at) VALUES (?, ?, ?, ?, ?)",
+        await self.db.execute(
+            "INSERT OR IGNORE INTO media(sha256, path, kind, size, created_at) VALUES (?, ?, ?, ?, ?)",
             (sha, name, kind, len(data), int(time.time())),
         )
+        media_id = (await self.db.fetchone("SELECT id FROM media WHERE sha256 = ?", (sha,)))["id"]
         m = MediaFile(media_id, path, kind, len(data))
         self.files[media_id] = m
         if reusable:  # file_id входящего фото/GIF/видео годится и для отправки

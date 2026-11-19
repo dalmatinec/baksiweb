@@ -79,9 +79,9 @@ def load_modules(modules_dir: Path, default_mem_mb: int) -> dict[str, Module]:
             slug = str(raw["slug"])
             if not slug.isidentifier():
                 raise ValueError("slug должен состоять из латиницы, цифр и _")
-            entry_pkg = manifest.parent / str(raw.get("entry", "bot")).split(".")[0]
-            if not entry_pkg.exists():
-                raise ValueError(f"нет пакета {entry_pkg.name}")
+            entry_name = str(raw.get("entry", "bot")).split(".")[0]
+            if not ((manifest.parent / entry_name).is_dir() or (manifest.parent / f"{entry_name}.py").exists()):
+                raise ValueError(f"нет точки входа {entry_name}")
             found[slug] = Module(
                 slug=slug, title=str(raw["title"]), tagline=str(raw.get("tagline", "")),
                 description=str(raw.get("description", "")), path=manifest.parent,
